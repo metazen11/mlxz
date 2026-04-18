@@ -277,43 +277,28 @@ class SingleStreamEngine:
             # Transition to decoding
             request.transition(RequestState.DECODING)
 
-            # EOS / stop config (hoist out of loop)
-            eos_token_id = getattr(self._tokenizer, "eos_token_id", None)
-            stop_checker = request._stop_checker
-            channel_put = request.output_channel.sync_q.put
+            # Initialize RNG key for deterministic sampling
+            rng_key = (
+                mx.random.key(request.sampling.seed)
+                if request.sampling.seed is not None
+                else None
+            )
 
-            # --- PREFETCH DECODE LOOP (mlx-lm style) ---
-            # Key insight: model forward AND sampling run inside mx.stream()
-            # so cache writes are serialized. Token materialization (.item())
-            # happens outside, after mx.eval(). This overlaps GPU compute
-            # with Python token delivery.
-
-            gen_stream = mx.new_stream(mx.default_device())
-
-            def _decode_step(y_arr):
-                """One decode step: forward + greedy sample, all in gen_stream."""
-                with mx.stream(gen_stream):
-                    step_logits = self._model(y_arr[None], cache=cache)
-                    step_logits = step_logits[:, -1, :]
-                    step_logprobs = step_logits - mx.logsumexp(step_logits, keepdims=True)
-                    step_token = mx.argmax(step_logits, axis=-1)
-                    return step_token, step_logprobs
-
-            # First token from prefill logits (already computed)
-            first_token = mx.argmax(logits[:, -1, :], axis=-1).reshape(-1)
-            first_logprobs = logits[:, -1, :] - mx.logsumexp(logits[:, -1, :], keepdims=True)
-            mx.eval(first_token)
-
-            token_id = first_token.item()
+            # First token from prefill logits
+            token_id, logprob = sample(logits[:, -1, :], request.sampling, rng_key)
             token_text = self._tokenizer.decode([token_id])
-            channel_put(Token(token_id, token_text, None))
+            request.output_channel.sync_q.put(Token(token_id, token_text, logprob))
             request.completion_token_count = 1
 
-            # Start prefetch of second token
-            y = first_token.reshape(-1)
-            next_y, next_logprobs = _decode_step(y)
-            mx.async_eval(next_y, next_logprobs)
+            # Track KV for first generated token
+            step_kv = int(kv_per_token)
+            kv_charged += step_kv
+            self._kv_used_bytes += step_kv
 
+            # EOS token id
+            eos_token_id = getattr(self._tokenizer, "eos_token_id", None)
+
+            # Decode loop
             decode_start = time.perf_counter()
 
             for _step in range(request.max_tokens - 1):
@@ -321,34 +306,48 @@ class SingleStreamEngine:
                 if self._cancellations.is_cancelled(request.id):
                     request.finish_reason = "cancelled"
                     request.transition(RequestState.CANCELLED)
+                    log.info(
+                        "request_cancelled",
+                        tokens_generated=request.completion_token_count,
+                    )
                     break
 
-                # Check EOS on previous token
+                # Check EOS
                 if eos_token_id is not None and token_id == eos_token_id:
                     request.finish_reason = "stop"
                     break
 
-                # Check stop sequences on previous token
-                if stop_checker is not None:
-                    should_stop, _ = stop_checker.check(token_text)
+                # Check stop sequences
+                if request._stop_checker is not None:
+                    should_stop, matched = request._stop_checker.check(token_text)
                     if should_stop:
                         request.finish_reason = "stop"
+                        log.debug("stop_sequence_matched", sequence=matched)
                         break
 
-                # Wait for prefetched result (GPU already computed it)
-                mx.eval(next_y)
-                y = next_y
+                # Advance RNG
+                if rng_key is not None:
+                    rng_key = mx.random.split(rng_key)[0]
 
-                # Start NEXT prefetch before Python delivery work
-                if _step < request.max_tokens - 2:
-                    next_y, next_logprobs = _decode_step(y)
-                    mx.async_eval(next_y, next_logprobs)
+                # Decode step
+                with self._guard:
+                    logits = self._model(mx.array([[token_id]]), cache=cache)
+                    mx.eval(logits)
 
-                # Materialize and deliver token (overlaps with GPU prefetch)
-                token_id = y.item()
+                token_id, logprob = sample(
+                    logits[:, -1, :], request.sampling, rng_key
+                )
                 token_text = self._tokenizer.decode([token_id])
-                channel_put(Token(token_id, token_text, None))
+
+                # Put token on channel (blocks if full -- backpressure)
+                request.output_channel.sync_q.put(
+                    Token(token_id, token_text, logprob)
+                )
                 request.completion_token_count += 1
+
+                # Update KV tracking
+                kv_charged += step_kv
+                self._kv_used_bytes += step_kv
 
             # Set finish reason if not already set
             if request.state == RequestState.DECODING:
