@@ -1,0 +1,18 @@
+{
+  "release-type": "python",
+  "packages": {
+    ".": {
+      "package-name": "mlxz",
+      "extra-files": [
+        "src/mlxz/__init__.py",
+        "pyproject.toml"
+      ],
+      "changelog-sections": [
+        { "type": "feat", "section": "Features" },
+        { "type": "fix", "section": "Bug Fixes" },
+        { "type": "perf", "section": "Performance" },
+        { "type": "docs", "section": "Documentation" }
+      ]
+    }
+  }
+}

@@ -1,0 +1,90 @@
+[
+  {
+    "system": "mlxz",
+    "model": "mlx-community/Llama-3.1-8B-Instruct-4bit",
+    "prompt_tokens": 107,
+    "max_tokens": 32,
+    "completion_tokens": 32,
+    "ttft_ms": 188.72,
+    "decode_tps": 71.66,
+    "total_latency_ms": 635.27,
+    "timestamp": "2026-04-18T03:13:39.795712"
+  },
+  {
+    "system": "mlx-lm",
+    "model": "mlx-community/Llama-3.1-8B-Instruct-4bit",
+    "prompt_tokens": 107,
+    "max_tokens": 32,
+    "completion_tokens": 34,
+    "ttft_ms": 16.16,
+    "decode_tps": 61.9,
+    "total_latency_ms": 549.3,
+    "timestamp": "2026-04-18T03:13:43.652137"
+  },
+  {
+    "system": "mlxz",
+    "model": "mlx-community/Llama-3.1-8B-Instruct-4bit",
+    "prompt_tokens": 107,
+    "max_tokens": 128,
+    "completion_tokens": 128,
+    "ttft_ms": 183.47,
+    "decode_tps": 69.54,
+    "total_latency_ms": 2024.1,
+    "timestamp": "2026-04-18T03:13:49.754153"
+  },
+  {
+    "system": "mlx-lm",
+    "model": "mlx-community/Llama-3.1-8B-Instruct-4bit",
+    "prompt_tokens": 107,
+    "max_tokens": 128,
+    "completion_tokens": 130,
+    "ttft_ms": 14.17,
+    "decode_tps": 70.56,
+    "total_latency_ms": 1842.52,
+    "timestamp": "2026-04-18T03:13:51.597409"
+  },
+  {
+    "system": "mlxz",
+    "model": "mlx-community/Llama-3.1-8B-Instruct-4bit",
+    "prompt_tokens": 334,
+    "max_tokens": 32,
+    "completion_tokens": 32,
+    "ttft_ms": 554.54,
+    "decode_tps": 48.28,
+    "total_latency_ms": 1217.31,
+    "timestamp": "2026-04-18T03:13:57.035735"
+  },
+  {
+    "system": "mlx-lm",
+    "model": "mlx-community/Llama-3.1-8B-Instruct-4bit",
+    "prompt_tokens": 334,
+    "max_tokens": 32,
+    "completion_tokens": 33,
+    "ttft_ms": 25.62,
+    "decode_tps": 39.03,
+    "total_latency_ms": 845.45,
+    "timestamp": "2026-04-18T03:14:01.690547"
+  },
+  {
+    "system": "mlxz",
+    "model": "mlx-community/Llama-3.1-8B-Instruct-4bit",
+    "prompt_tokens": 334,
+    "max_tokens": 128,
+    "completion_tokens": 128,
+    "ttft_ms": 498.31,
+    "decode_tps": 69.37,
+    "total_latency_ms": 2343.49,
+    "timestamp": "2026-04-18T03:14:04.878997"
+  },
+  {
+    "system": "mlx-lm",
+    "model": "mlx-community/Llama-3.1-8B-Instruct-4bit",
+    "prompt_tokens": 334,
+    "max_tokens": 128,
+    "completion_tokens": 129,
+    "ttft_ms": 16.23,
+    "decode_tps": 61.63,
+    "total_latency_ms": 2093.21,
+    "timestamp": "2026-04-18T03:14:16.331142"
+  }
+]

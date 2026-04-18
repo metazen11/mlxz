@@ -1,0 +1,23 @@
+name: publish
+on:
+  release:
+    types: [published]
+
+permissions:
+  id-token: write
+  contents: read
+  attestations: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv build
+      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: dist/*

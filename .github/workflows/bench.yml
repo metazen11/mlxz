@@ -1,0 +1,37 @@
+name: bench
+on:
+  pull_request: { types: [labeled, synchronize] }
+  push: { branches: [main] }
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    if: contains(github.event.pull_request.labels.*.name, 'perf') || github.event_name == 'push'
+    runs-on: [self-hosted, m4-max, 64gb]
+    timeout-minutes: 90
+    environment: benchmark
+    steps:
+      - uses: actions/checkout@v4
+        with: { lfs: true }
+      - uses: astral-sh/setup-uv@v3
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-bench-${{ hashFiles('uv.lock') }}
+          restore-keys: uv-bench-
+      - run: sudo /usr/local/bin/set-wired-limit 87.5
+      - run: uv sync --all-extras
+      - run: uv run mlxz doctor --strict
+      - run: uv run mlxz bench --regression --baseline benchmarks/baseline.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ github.sha }}
+          path: ~/.cache/mlxz/telemetry.db
+          retention-days: 30

@@ -1,0 +1,82 @@
+[project]
+name = "mlxz"
+version = "0.0.0"
+description = "High-throughput local inference server for Apple Silicon"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Mauricio Zuniga" }]
+dependencies = [
+    "mlx>=0.22,<0.23",
+    "mlx-lm>=0.21,<0.23",
+    "gguf>=0.10,<0.12",
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",
+    "pydantic>=2.7,<3.0",
+    "pydantic-settings>=2.4,<3.0",
+    "typer>=0.12,<1.0",
+    "structlog>=24.0",
+    "prometheus-client>=0.20,<1.0",
+    "sqlalchemy>=2.0,<3.0",
+    "alembic>=1.13,<2.0",
+    "huggingface-hub>=0.26",
+    "numpy>=1.26,<3.0",
+    "httpx>=0.27,<1.0",
+    "janus>=1.0,<2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-xdist>=3",
+    "pytest-benchmark>=4",
+    "pytest-asyncio>=0.23",
+    "pytest-timeout>=2.3",
+    "hypothesis>=6",
+    "ruff>=0.6",
+    "pyright>=1.1.380",
+    "pre-commit>=3.7",
+    "mkdocs-material>=9.5",
+    "mkdocs-mermaid2-plugin>=1.1",
+    "openai>=1.40",
+    "locust>=2.31",
+    "pip-audit>=2.7",
+    "bandit>=1.8",
+]
+postgres = ["psycopg[binary]>=3.2"]
+
+[project.scripts]
+mlxz = "mlxz.cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mlxz"]
+
+[tool.pyright]
+include = ["src"]
+strict = ["src/mlxz"]
+pythonVersion = "3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "N", "PTH", "PL", "ASYNC"]
+ignore = ["PLR0913"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config --timeout=30"
+timeout_method = "thread"
+asyncio_mode = "auto"
+markers = [
+    "slow: > 30s runtime",
+    "self_hosted: requires Apple Silicon self-hosted runner",
+    "correctness: runs full correctness dataset",
+    "soak: multi-hour test",
+    "metal: requires Apple Metal GPU",
+]
