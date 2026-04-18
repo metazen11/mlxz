@@ -67,6 +67,7 @@ def create_app(config: RuntimeConfig) -> FastAPI:
         # --- Startup ---
         from mlxz.engine.request import Request
         from mlxz.engine.single_stream import SingleStreamEngine
+        from mlxz.engine.continuous import ContinuousBatchingEngine
         from mlxz.engine.thread_boundary import CancellationRegistry, RequestBridge
         from mlxz.loader.safetensors_store import ModelStore
         from mlxz.profile.residency import ResidencyPlanner
@@ -81,10 +82,17 @@ def create_app(config: RuntimeConfig) -> FastAPI:
         planner = ResidencyPlanner()
         budget = planner.plan_for(weight_bytes, config)
 
-        # 3. Create engine components
+        # 3. Create engine — select based on max_concurrent_requests
         bridge = RequestBridge()
         cancellations = CancellationRegistry()
-        engine = SingleStreamEngine(config, bridge, cancellations)
+        use_continuous = config.scheduler.max_concurrent_requests > 1
+        if use_continuous:
+            engine = ContinuousBatchingEngine(config, bridge, cancellations)
+            logger.info("engine_mode", mode="continuous_batching",
+                        max_batch=config.scheduler.max_concurrent_requests)
+        else:
+            engine = SingleStreamEngine(config, bridge, cancellations)
+            logger.info("engine_mode", mode="single_stream")
         engine.set_model(model, tokenizer)
         engine.set_budget(budget)
 
