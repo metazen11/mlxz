@@ -325,7 +325,12 @@ class ContinuousBatchingEngine:
             break
 
     def _process_decodes(self) -> None:
-        """Batch decode step for all decoding requests."""
+        """Decode step for all active requests.
+
+        When only one request is active, runs a tight decode loop
+        (multiple tokens per engine iteration) to minimize Python overhead.
+        With multiple requests, processes one token per request per iteration.
+        """
         decoding = [
             (rid, active)
             for rid, active in self._running.items()
@@ -341,8 +346,55 @@ class ContinuousBatchingEngine:
         kv_per_token = self._kv_bytes_per_token()
         step_kv = int(kv_per_token)
 
-        # Process each request individually (true batching requires model support)
-        # Phase 4 v1: sequential decode within the iteration
+        # Fast path: single request — tight decode loop (no per-iteration overhead)
+        if len(decoding) == 1:
+            req_id, active = decoding[0]
+            request = active.request
+            # Decode up to 32 tokens before checking for new requests
+            for _ in range(32):
+                if request.completion_token_count >= request.max_tokens:
+                    request.finish_reason = "length"
+                    request.transition(RequestState.COMPLETED)
+                    return
+                if eos_token_id is not None and active.last_token_id == eos_token_id:
+                    request.finish_reason = "stop"
+                    request.transition(RequestState.COMPLETED)
+                    return
+                if self._cancellations.is_cancelled(req_id):
+                    return
+                if request._stop_checker is not None:
+                    last_text = self._tokenizer.decode([active.last_token_id])
+                    should_stop, _ = request._stop_checker.check(last_text)
+                    if should_stop:
+                        request.finish_reason = "stop"
+                        request.transition(RequestState.COMPLETED)
+                        return
+                if active.rng_key is not None:
+                    active.rng_key = mx.random.split(active.rng_key)[0]
+                logits = self._model(
+                    mx.array([[active.last_token_id]]), cache=active.cache
+                )
+                mx.eval(logits)
+                token_id, logprob = sample(
+                    logits[:, -1, :], request.sampling, active.rng_key
+                )
+                token_text = self._tokenizer.decode([token_id])
+                try:
+                    request.output_channel.sync_q.put_nowait(
+                        Token(token_id, token_text, logprob)
+                    )
+                except Exception:
+                    return  # backpressure
+                request.completion_token_count += 1
+                active.last_token_id = token_id
+                active.kv_charged += step_kv
+                self._kv_used_bytes += step_kv
+                # Check if new requests arrived
+                if not self._bridge._submit_queue.sync_q.empty():
+                    return  # yield to admit new requests
+            return
+
+        # Multi-request path: one token per request per iteration
         for req_id, active in decoding:
             request = active.request
 
@@ -356,7 +408,6 @@ class ContinuousBatchingEngine:
                 request.transition(RequestState.COMPLETED)
                 continue
 
-            # Check stop sequences
             if request._stop_checker is not None:
                 last_text = self._tokenizer.decode([active.last_token_id])
                 should_stop, _ = request._stop_checker.check(last_text)
@@ -365,11 +416,9 @@ class ContinuousBatchingEngine:
                     request.transition(RequestState.COMPLETED)
                     continue
 
-            # Advance RNG
             if active.rng_key is not None:
                 active.rng_key = mx.random.split(active.rng_key)[0]
 
-            # Decode step
             with self._guard:
                 logits = self._model(
                     mx.array([[active.last_token_id]]), cache=active.cache
@@ -386,13 +435,10 @@ class ContinuousBatchingEngine:
                     Token(token_id, token_text, logprob)
                 )
             except Exception:
-                # Channel full — backpressure, skip this request for now
                 continue
 
             request.completion_token_count += 1
             active.last_token_id = token_id
-
-            # Update KV tracking
             active.kv_charged += step_kv
             self._kv_used_bytes += step_kv
 

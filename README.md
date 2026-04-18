@@ -188,8 +188,8 @@ src/mlxz/
 | 2 | Done | Prefix cache (memory + disk) |
 | 3 | Done | Paged attention, block manager |
 | 4 | Done | Continuous batching |
-| 5 | Planned | Speculative decoding |
-| 6 | Planned | Hardening, Homebrew, soak tests |
+| 5 | Done | Speculative decoding (Chen et al. rejection sampling) |
+| 6 | Done | Circuit breaker, bench CLI, docs, hardening |
 
 ## Requirements
 
@@ -197,6 +197,10 @@ src/mlxz/
 - Python 3.11+
 - MLX 0.22.x
 
+## Author
+
+Created by **Mauricio Zuniga** ([@metazen11](https://github.com/metazen11))
+
 ## License
 
-Apache-2.0
+Copyright 2026 Mauricio Zuniga. MIT License
