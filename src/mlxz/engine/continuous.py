@@ -346,11 +346,25 @@ class ContinuousBatchingEngine:
         kv_per_token = self._kv_bytes_per_token()
         step_kv = int(kv_per_token)
 
-        # Fast path: single request — tight decode loop (no per-iteration overhead)
+        # Fast path: single request — prefetch decode loop (mlx-lm style)
         if len(decoding) == 1:
             req_id, active = decoding[0]
             request = active.request
-            # Decode up to 32 tokens before checking for new requests
+            stop_checker = request._stop_checker
+            gen_stream = mx.new_stream(mx.default_device())
+
+            def _fast_step(y_arr):
+                with mx.stream(gen_stream):
+                    logits = self._model(y_arr[None], cache=active.cache)
+                    logits = logits[:, -1, :]
+                    token = mx.argmax(logits, axis=-1)
+                    return token, logits
+
+            # Start first prefetch
+            y = mx.array([active.last_token_id])
+            next_y, next_logits = _fast_step(y)
+            mx.async_eval(next_y, next_logits)
+
             for _ in range(32):
                 if request.completion_token_count >= request.max_tokens:
                     request.finish_reason = "length"
@@ -362,36 +376,36 @@ class ContinuousBatchingEngine:
                     return
                 if self._cancellations.is_cancelled(req_id):
                     return
-                if request._stop_checker is not None:
+                if stop_checker is not None:
                     last_text = self._tokenizer.decode([active.last_token_id])
-                    should_stop, _ = request._stop_checker.check(last_text)
+                    should_stop, _ = stop_checker.check(last_text)
                     if should_stop:
                         request.finish_reason = "stop"
                         request.transition(RequestState.COMPLETED)
                         return
-                if active.rng_key is not None:
-                    active.rng_key = mx.random.split(active.rng_key)[0]
-                logits = self._model(
-                    mx.array([[active.last_token_id]]), cache=active.cache
-                )
-                mx.eval(logits)
-                token_id, logprob = sample(
-                    logits[:, -1, :], request.sampling, active.rng_key
-                )
+
+                # Wait for prefetched result
+                mx.eval(next_y)
+                y = next_y
+
+                # Start NEXT prefetch before delivery
+                next_y, next_logits = _fast_step(y)
+                mx.async_eval(next_y, next_logits)
+
+                # Deliver token
+                token_id = y.item()
                 token_text = self._tokenizer.decode([token_id])
                 try:
                     request.output_channel.sync_q.put_nowait(
-                        Token(token_id, token_text, logprob)
+                        Token(token_id, token_text, None)
                     )
                 except Exception:
-                    return  # backpressure
+                    return
                 request.completion_token_count += 1
                 active.last_token_id = token_id
-                active.kv_charged += step_kv
-                self._kv_used_bytes += step_kv
-                # Check if new requests arrived
+
                 if not self._bridge._submit_queue.sync_q.empty():
-                    return  # yield to admit new requests
+                    return
             return
 
         # Multi-request path: one token per request per iteration
