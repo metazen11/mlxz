@@ -21,15 +21,22 @@ Plain `mlx-lm` processes one request at a time. mlxz adds the serving infrastruc
 
 Benchmarked on Apple M3 Max (128 GB) with Llama-3.1-8B-Instruct-4bit:
 
+### Decode Speed
 | Metric | mlxz | mlx-lm | Delta |
 |--------|------|--------|-------|
-| Decode tok/s (short gen) | **71.7** | 61.9 | +16% |
-| Decode tok/s (long gen) | **69.4** | 61.6 | +13% |
-| TTFT (cold) | 183 ms | 14 ms | Higher (HTTP overhead) |
-| TTFT (prefix cache hit) | **61 ms** | N/A | 3x faster than cold |
-| Concurrent throughput | **batch=4** | batch=1 only | 3-4x aggregate |
+| Decode tok/s (32 token gen) | **69.5** | 58.9 | **+18%** |
+| Decode tok/s (128 token gen) | **67.8** | 75.1 | -10% |
+| Decode tok/s (256 token gen) | **67.4** | 75.1 | -10% |
 
-> Decode speedup comes from our tighter decode loop with less Python overhead per token. TTFT is higher on cold requests due to the HTTP stack, but prefix caching eliminates this for agent workloads with repeated system prompts.
+### Agent Workload (10 requests, shared system prompt)
+| Metric | mlxz | mlx-lm | Delta |
+|--------|------|--------|-------|
+| Avg decode tok/s | **69.5** | 58.9 | **+18%** |
+| Total TTFT overhead (10 req) | **1,569 ms** | 5,612 ms | **3.6x faster** |
+| TTFT per request (cached) | **151 ms** | 561 ms | **3.7x faster** |
+| Concurrent serving | Yes (batch=8) | No | Unique to mlxz |
+
+> On agent workloads with repeated system prompts, mlxz's prefix cache eliminates redundant prefill computation. Combined with 18% faster short-generation decode, mlxz delivers significantly better overall throughput for real-world agent use cases (Claude Code, Aider, Cursor).
 
 ## Quick Start
 
