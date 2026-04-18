@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import typer
 
+from mlxz.cli.bench import bench
 from mlxz.cli.doctor import doctor
 from mlxz.cli.serve import serve
 
@@ -22,15 +23,9 @@ app = typer.Typer(
 # Subcommands
 # ---------------------------------------------------------------------------
 
+app.command()(bench)
 app.command()(doctor)
 app.command()(serve)
-
-
-@app.command()
-def bench() -> None:
-    """Run benchmarks (not yet implemented)."""
-    typer.echo("bench: not yet implemented (Phase 0)")
-    raise typer.Exit(code=0)
 
 
 if __name__ == "__main__":
