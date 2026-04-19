@@ -9,12 +9,12 @@ mlxz is a serving engine, not a training framework. It loads models via mlx-lm a
 ### Engine Layer
 - **SingleStreamEngine** — Batch=1, synchronous. Simple and fast for single-user.
 - **ContinuousBatchingEngine** — Iteration-level batching for concurrent requests.
-- **SpeculativeEngine** — Draft-target with rejection sampling for higher throughput.
+- **SpeculativeEngine** — Runtime-selectable draft-target engine with rejection sampling.
 
 ### Cache Layer
 - **PrefixCacheMemory** — In-memory LRU with content-addressed hashing
 - **PrefixCacheDisk** — Persistent cache with safetensors + SHA-256 checksums
-- **BlockManager** — Paged KV cache with reference counting and COW
+- **BlockManager / PagedKVCache** — Experimental paged-attention primitives
 
 ### API Layer
 - **FastAPI** — OpenAI-compatible endpoints with SSE streaming

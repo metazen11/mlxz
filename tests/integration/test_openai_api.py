@@ -325,9 +325,15 @@ class TestChatCompletionsStreaming:
             )
         lines = resp.text.strip().split("\n")
         data_lines = [l for l in lines if l.startswith("data: ") and l != "data: [DONE]"]
-        # Should have: 1 role chunk + 3 content chunks + 1 finish chunk = 5
-        # (role, "Hello", " world", "!", finish)
-        assert len(data_lines) >= 4  # role + at least some content + finish
+        assert len(data_lines) >= 3  # role + content + finish (content may be batched)
+
+        chunks = [json.loads(line.removeprefix("data: ")) for line in data_lines]
+        content = "".join(
+            (chunk["choices"][0]["delta"].get("content") or "")
+            for chunk in chunks
+        )
+        assert content
+        assert content == "Hello world!"
 
     async def test_final_chunk_has_finish_reason(self, mock_app) -> None:
         transport = ASGITransport(app=mock_app)

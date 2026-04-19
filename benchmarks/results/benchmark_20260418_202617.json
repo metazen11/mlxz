@@ -1,0 +1,13 @@
+[
+  {
+    "system": "mlx-lm",
+    "model": "mlx-community/Llama-3.1-8B-Instruct-4bit",
+    "prompt_tokens": 107,
+    "max_tokens": 128,
+    "completion_tokens": 127,
+    "ttft_ms": 137.89,
+    "decode_tps": 76.69,
+    "total_latency_ms": 1793.86,
+    "timestamp": "2026-04-18T20:26:17.749012"
+  }
+]

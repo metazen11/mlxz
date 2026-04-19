@@ -71,6 +71,12 @@ class SpeculativeEngine:
         # Stats
         self._total_accepted: int = 0
         self._total_proposed: int = 0
+        # Prefix cache is wired through the common app startup path.
+        # Speculative decode currently skips cache reuse and remains functional
+        # without it; the hook exists so engine selection stays uniform.
+        self._prefix_cache_memory = None
+        self._prefix_cache_disk = None
+        self._prefix_hasher = None
 
     @property
     def model_name(self) -> str:
@@ -110,6 +116,26 @@ class SpeculativeEngine:
         """Set the draft model. Must be called before run()."""
         self._draft = DraftModel(draft_model, draft_tokenizer)
 
+    def set_prefix_cache(
+        self,
+        memory_cache: Any | None = None,
+        disk_cache: Any | None = None,
+        block_size: int = 8,
+    ) -> None:
+        """Accept the shared prefix-cache wiring used by app startup.
+
+        Speculative decoding can use prefix caching, but the cache layout differs
+        because we keep both draft and target caches. Leave the hook in place so
+        startup stays uniform and we can add the dual-cache implementation without
+        changing engine selection again.
+        """
+        self._prefix_cache_memory = memory_cache
+        self._prefix_cache_disk = disk_cache
+        if memory_cache is not None or disk_cache is not None:
+            from mlxz.prefix_cache.hasher import RollingPrefixHasher
+
+            self._prefix_hasher = RollingPrefixHasher(block_size=block_size)
+
     def set_budget(self, budget: ResidencyBudget) -> None:
         self._budget = budget
 
@@ -142,20 +168,103 @@ class SpeculativeEngine:
 
             # Create KV caches for both models
             from mlx_lm.models.cache import make_prompt_cache
+
             target_cache = make_prompt_cache(self._target_model)
             draft_cache = make_prompt_cache(self._draft._model)
 
+            # Prefix cache lookup applies to the target model only. The draft
+            # model has different weights, so its KV cache cannot be reused.
+            n_prefix_tokens = 0
+            token_hashes: tuple[bytes, ...] = ()
+            cache_tier = ""
+
+            if self._prefix_hasher is not None:
+                token_hashes = self._prefix_hasher.hash_chunks(request.prompt_tokens)
+
+                if self._prefix_cache_memory is not None:
+                    n_matched, cached_kv = self._prefix_cache_memory.lookup_sync(
+                        token_hashes
+                    )
+                    if cached_kv is not None and n_matched > 0:
+                        n_prefix_tokens = n_matched
+                        cache_tier = "memory"
+                        for layer_cache, cached_state in zip(target_cache, cached_kv):
+                            layer_cache.state = cached_state
+
+                if n_prefix_tokens == 0 and self._prefix_cache_disk is not None:
+                    n_matched, cached_kv = self._prefix_cache_disk.lookup_sync(
+                        token_hashes
+                    )
+                    if cached_kv is not None and n_matched > 0:
+                        n_prefix_tokens = n_matched
+                        cache_tier = "disk"
+                        for layer_cache, cached_state in zip(target_cache, cached_kv):
+                            layer_cache.state = cached_state
+
+                n_prefix_tokens = min(n_prefix_tokens, len(request.prompt_tokens))
+                request.prefix_cache_hit_tokens = n_prefix_tokens
+
+                if n_prefix_tokens > 0:
+                    log.info(
+                        "prefix_cache_hit",
+                        tier=cache_tier,
+                        matched_tokens=n_prefix_tokens,
+                        total_prompt_tokens=len(request.prompt_tokens),
+                    )
+
+            # Determine target-model prompt slice
+            if n_prefix_tokens >= len(request.prompt_tokens):
+                # Full hit -- re-run last token for fresh logits
+                try:
+                    from mlx_lm.models.cache import trim_prompt_cache
+
+                    trim_prompt_cache(target_cache, 1)
+                except ImportError:
+                    for lc in target_cache:
+                        if hasattr(lc, "offset"):
+                            lc.offset = max(0, lc.offset - 1)
+                target_input_ids = mx.array([request.prompt_tokens[-1:]])
+            elif n_prefix_tokens > 0:
+                target_input_ids = mx.array([request.prompt_tokens[n_prefix_tokens:]])
+            else:
+                target_input_ids = mx.array([request.prompt_tokens])
+
+            # Draft model always needs the full prompt because its KV cache is
+            # not compatible with the target model's cached prefix.
+            draft_input_ids = mx.array([request.prompt_tokens])
+
             # Prefill both models
-            input_ids = mx.array([request.prompt_tokens])
             t0 = time.perf_counter()
 
             with self._guard:
-                target_logits = self._target_model(input_ids, cache=target_cache)
-                draft_logits = self._draft._model(input_ids, cache=draft_cache)
+                target_logits = self._target_model(target_input_ids, cache=target_cache)
+                draft_logits = self._draft._model(draft_input_ids, cache=draft_cache)
                 mx.eval(target_logits, draft_logits)
 
             ttft = time.perf_counter() - t0
-            log.info("prefill_complete", ttft_ms=round(ttft * 1000, 2))
+            request.ttft_ms = ttft * 1000.0
+
+            if (
+                n_prefix_tokens == 0
+                and self._prefix_cache_memory is not None
+                and token_hashes
+            ):
+                try:
+                    self._prefix_cache_memory.store_sync(
+                        token_hashes,
+                        target_cache,
+                        n_tokens=len(request.prompt_tokens),
+                        block_size=self._prefix_hasher.block_size if self._prefix_hasher else 8,
+                    )
+                except Exception:
+                    log.warning("prefix_cache_store_failed", exc_info=True)
+
+            log.info(
+                "prefill_complete",
+                ttft_ms=round(ttft * 1000, 2),
+                prefix_cache=("hit" if n_prefix_tokens > 0 else "miss"),
+                prefix_tokens=n_prefix_tokens,
+            )
 
             request.transition(RequestState.DECODING)
 
@@ -168,6 +277,7 @@ class SpeculativeEngine:
             eos_token_id = getattr(self._tokenizer, "eos_token_id", None)
 
             # Speculative decode loop
+            decode_start = time.perf_counter()
             while request.completion_token_count < request.max_tokens:
                 if self._cancellations.is_cancelled(request.id):
                     request.finish_reason = "cancelled"
@@ -273,9 +383,17 @@ class SpeculativeEngine:
                     request.finish_reason = "length"
                 request.transition(RequestState.COMPLETED)
 
+            decode_duration = time.perf_counter() - decode_start
+            request.decode_tps = (
+                request.completion_token_count / decode_duration
+                if decode_duration > 0
+                else 0.0
+            )
+
             log.info("request_completed",
                      completion_tokens=request.completion_token_count,
                      finish_reason=request.finish_reason,
+                     decode_tps=round(request.decode_tps, 2),
                      acceptance_rate=round(self.acceptance_rate, 3),
                      draft_k=self._current_draft_k)
 

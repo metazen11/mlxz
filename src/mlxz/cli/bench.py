@@ -62,6 +62,8 @@ def bench(
                         "messages": [{"role": "user", "content": prompt}],
                         "max_tokens": max_tokens,
                         "stream": True,
+                        "temperature": 0,
+                        "seed": 42,
                     },
                 ) as resp:
                     for line in resp.iter_lines():

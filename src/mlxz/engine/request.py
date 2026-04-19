@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import ClassVar
 
 import janus
@@ -65,6 +65,8 @@ class Request:
     prompt_token_count: int = 0
     completion_token_count: int = 0
     prefix_cache_hit_tokens: int = 0
+    ttft_ms: float = 0.0
+    decode_tps: float = 0.0
     finish_reason: str | None = None  # "stop" | "length"
     stop_sequences: list[str] = field(default_factory=list)
     _stop_checker: StopChecker | None = field(default=None, repr=False, init=False)
@@ -103,10 +105,12 @@ class Request:
         prompt_tokens: list[int],
         max_tokens: int,
         sampling: SamplingParams,
+        return_logprob: bool = True,
         stop_sequences: list[str] | None = None,
         channel_depth: int = 64,
     ) -> Request:
         """Factory that creates a Request with a fresh janus channel."""
+        sampling = replace(sampling, return_logprob=return_logprob)
         return Request(
             id=str(uuid.uuid4()),
             prompt_tokens=prompt_tokens,

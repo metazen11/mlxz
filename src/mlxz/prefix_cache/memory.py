@@ -1,6 +1,7 @@
 """In-memory prefix cache with LRU eviction."""
 from __future__ import annotations
 
+import copy
 import time
 from typing import Any
 
@@ -76,6 +77,7 @@ class PrefixCacheMemory:
         token_hashes: tuple[bytes, ...],
         kv_cache_layers: list[Any],
         n_tokens: int | None = None,
+        block_size: int = 8,
     ) -> None:
         """Store prefix KV data. Deep-copies tensors and evicts LRU if over budget.
 
@@ -85,21 +87,21 @@ class PrefixCacheMemory:
                 property returning the (keys, values) tuple.
             n_tokens: Number of tokens this prefix covers. If None, inferred from
                 the first layer's key tensor shape.
+            block_size: Prefix-cache chunk size used to derive stored prefix keys.
         """
         if token_hashes in self._entries:
             return  # already cached
 
-        # Extract and deep-copy KV states
-        kv_states = []
+        # Extract and deep-copy KV states from a mutable cache snapshot.
         cache_type = type(kv_cache_layers[0]).__name__
-        for layer_cache in kv_cache_layers:
-            state = layer_cache.state  # (keys, values) sliced to offset
-            copied = _deep_copy_kv_states([state])[0]
-            kv_states.append(copied)
+        cache_copy = copy.deepcopy(kv_cache_layers)
+
+        def _snapshot_state(copy_cache: list[Any]) -> list[Any]:
+            return _deep_copy_kv_states([layer_cache.state for layer_cache in copy_cache])
 
         if n_tokens is None:
             # Infer from the first layer's key tensor
-            first_state = kv_states[0]
+            first_state = cache_copy[0].state
             if isinstance(first_state, tuple) and len(first_state) >= 1:
                 keys = first_state[0]
                 if isinstance(keys, mx.array):
@@ -112,28 +114,59 @@ class PrefixCacheMemory:
             else:
                 n_tokens = 0
 
-        size = compute_size_bytes(kv_states)
+        if n_tokens <= 0:
+            return
 
-        # Evict until we have room
-        self._evict_until_room(size)
+        # Store the full prompt state and each chunk boundary prefix so future
+        # requests can hit on shared system-prompt prefixes instead of only
+        # exact full-prompt matches.
+        prefix_lengths: list[int] = list(range(block_size, n_tokens, block_size))
+        if not prefix_lengths or prefix_lengths[-1] != n_tokens:
+            prefix_lengths.append(n_tokens)
 
-        if size > self._budget:
-            logger.warning("prefix_cache_entry_too_large",
-                           entry_bytes=size, budget_bytes=self._budget)
-            return  # single entry exceeds entire budget
+        current_len = n_tokens
+        for prefix_len in reversed(prefix_lengths):
+            if current_len > prefix_len:
+                from mlx_lm.models.cache import trim_prompt_cache
 
-        entry = CachedPrefix(
-            token_hashes=token_hashes,
-            kv_states=kv_states,
-            n_tokens=n_tokens,
-            size_bytes=size,
-            cache_type=cache_type,
-        )
-        self._entries[token_hashes] = entry
-        self._used_bytes += size
-        self._stats.memory_used_bytes = self._used_bytes
-        logger.debug("prefix_cache_memory_stored",
-                     chunks=len(token_hashes), n_tokens=n_tokens, size_bytes=size)
+                trim_prompt_cache(cache_copy, current_len - prefix_len)
+                current_len = prefix_len
+
+            prefix_chunks = prefix_len // block_size
+            if prefix_len % block_size:
+                prefix_chunks += 1
+            prefix_key = token_hashes[:prefix_chunks]
+            if not prefix_key or prefix_key in self._entries:
+                continue
+
+            kv_states = _snapshot_state(cache_copy)
+            size = compute_size_bytes(kv_states)
+
+            self._evict_until_room(size)
+            if size > self._budget:
+                logger.warning(
+                    "prefix_cache_entry_too_large",
+                    entry_bytes=size,
+                    budget_bytes=self._budget,
+                )
+                continue
+
+            entry = CachedPrefix(
+                token_hashes=prefix_key,
+                kv_states=kv_states,
+                n_tokens=prefix_len,
+                size_bytes=size,
+                cache_type=cache_type,
+            )
+            self._entries[prefix_key] = entry
+            self._used_bytes += size
+            self._stats.memory_used_bytes = self._used_bytes
+            logger.debug(
+                "prefix_cache_memory_stored",
+                chunks=len(prefix_key),
+                n_tokens=prefix_len,
+                size_bytes=size,
+            )
 
     def _evict_until_room(self, needed_bytes: int) -> None:
         """Evict LRU entries until there's room for needed_bytes."""

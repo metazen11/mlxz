@@ -24,6 +24,12 @@ class TestGreedySampling:
         assert logprob is not None
         assert logprob < 0  # log probabilities are negative
 
+    def test_greedy_can_skip_logprob(self):
+        logits = mx.array([1.0, 5.0, 3.0])
+        params = SamplingParams(temperature=0.0, return_logprob=False)
+        _, logprob = sample(logits, params)
+        assert logprob is None
+
 
 @pytest.mark.metal
 class TestTopK:
@@ -88,3 +94,11 @@ class TestDeterminism:
             t, _ = sample(logits, params, key=key)
             results.add(t)
         assert len(results) > 1  # at least 2 different tokens
+
+
+class TestNoLogprob:
+    def test_sampling_can_skip_logprob(self):
+        logits = mx.array([1.0, 2.0, 3.0, 4.0])
+        params = SamplingParams(temperature=1.0, return_logprob=False)
+        _, logprob = sample(logits, params, key=mx.random.key(0))
+        assert logprob is None

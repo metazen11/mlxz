@@ -15,6 +15,9 @@ Performance benchmarking suite for comparing mlxz inference against plain mlx-lm
 # 1. Start the mlxz server
 mlxz serve mlx-community/Llama-3.1-8B-Instruct-4bit --port 8321
 
+# For apples-to-apples engine comparisons, force single-stream mode:
+# mlxz serve mlx-community/Llama-3.1-8B-Instruct-4bit --port 8321 --max-concurrent-requests 1
+
 # 2. In another terminal, run the quick comparison
 python benchmarks/compare_to_mlx_lm.py \
     --model mlx-community/Llama-3.1-8B-Instruct-4bit
@@ -54,6 +57,18 @@ and mlx-lm, taking the median of N runs per configuration.
 
 Runs a single prompt through both systems and prints a side-by-side table.
 Ideal for quick sanity checks during development.
+
+### `agent_workload.py` -- Canonical Agent Scenario
+
+Runs concurrent requests that share the same system prompt (agent-style workload)
+and reports median/p95 TTFT, median decode throughput, and aggregate throughput.
+
+### Thesis matrix
+
+Performance PRs should be judged on at least three model sizes when available:
+`Llama-3.2-3B-Instruct-4bit`, `Llama-3.1-8B-Instruct-4bit`, and
+`Qwen2.5-14B-Instruct-4bit`. The point is to catch optimizations that only help
+one model size and to keep claims honest about what generalizes on MLX.
 
 ## Results Directory
 
@@ -101,6 +116,9 @@ rm benchmarks/baseline.json
 python benchmarks/run_benchmark.py --model <your-model>
 ```
 
+By default, `run_benchmark.py` exits non-zero when regressions exceed 10%.
+Use `--no-fail-on-regression` to report regressions without failing.
+
 ## Interpreting Results
 
 ### What matters most
@@ -108,6 +126,11 @@ python benchmarks/run_benchmark.py --model <your-model>
 1. **Decode tok/s** is the primary throughput metric.  Higher is better.
    mlxz targets parity or improvement over plain mlx-lm through KV-cache
    quantisation, prefix caching, and continuous batching.
+
+   When comparing the pure engine path against mlx-lm, start mlxz with
+   `--max-concurrent-requests 1` so the result excludes continuous batching
+   overhead. Compare the concurrent-serving mode separately, because that is
+   the feature mlx-lm does not have at all.
 
 2. **TTFT** matters for interactive use.  mlxz adds HTTP overhead but may
    offset it with prefix cache hits on repeated prompts.

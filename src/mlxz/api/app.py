@@ -7,6 +7,7 @@ configures a lifespan context manager for startup/shutdown orchestration.
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -40,6 +41,14 @@ _AUTH_EXEMPT_PATHS: set[str] = {
 }
 
 
+def _parse_bind(bind: str) -> tuple[str, int]:
+    """Parse host:port bind string."""
+    host, sep, port_str = bind.rpartition(":")
+    if sep == "" or not host:
+        raise ValueError(f"Invalid bind address: {bind!r}")
+    return host, int(port_str)
+
+
 def create_app(config: RuntimeConfig) -> FastAPI:
     """Build and return a fully-configured :class:`FastAPI` application.
 
@@ -65,13 +74,18 @@ def create_app(config: RuntimeConfig) -> FastAPI:
         logger.info("server_starting", model=config.model)
 
         # --- Startup ---
-        from mlxz.engine.request import Request
-        from mlxz.engine.single_stream import SingleStreamEngine
         from mlxz.engine.continuous import ContinuousBatchingEngine
+        from mlxz.engine.single_stream import SingleStreamEngine
+        from mlxz.engine.speculative import SpeculativeEngine
         from mlxz.engine.thread_boundary import CancellationRegistry, RequestBridge
         from mlxz.loader.safetensors_store import ModelStore
+        from mlxz.profile.hardware import detect_hardware
         from mlxz.profile.residency import ResidencyPlanner
         from mlxz.scheduler.admission import AdmissionController
+        from mlxz.telemetry.db import create_engine_from_config
+        from mlxz.telemetry.recorder import TelemetryRecorder
+        from mlxz.api.metrics import create_metrics_app
+        import uvicorn
 
         # 1. Load model
         store = ModelStore()
@@ -82,11 +96,28 @@ def create_app(config: RuntimeConfig) -> FastAPI:
         planner = ResidencyPlanner()
         budget = planner.plan_for(weight_bytes, config)
 
-        # 3. Create engine — select based on max_concurrent_requests
+        # 3. Create engine — select based on runtime mode
         bridge = RequestBridge()
         cancellations = CancellationRegistry()
+        use_speculative = config.speculative.enabled
         use_continuous = config.scheduler.max_concurrent_requests > 1
-        if use_continuous:
+        if use_speculative:
+            draft_model_path = config.speculative.draft_model or config.draft_model
+            if draft_model_path is None:
+                raise ValueError(
+                    "speculative.enabled=true requires speculative.draft_model "
+                    "or draft_model to be set"
+                )
+            engine = SpeculativeEngine(config, bridge, cancellations)
+            draft_model, draft_tokenizer, _ = store.load(draft_model_path)
+            engine.set_draft_model(draft_model, draft_tokenizer)
+            logger.info(
+                "engine_mode",
+                mode="speculative",
+                draft_model=draft_model_path,
+                draft_k=config.speculative.num_draft_tokens,
+            )
+        elif use_continuous:
             engine = ContinuousBatchingEngine(config, bridge, cancellations)
             logger.info("engine_mode", mode="continuous_batching",
                         max_batch=config.scheduler.max_concurrent_requests)
@@ -113,7 +144,11 @@ def create_app(config: RuntimeConfig) -> FastAPI:
                 disk_budget_bytes=int(config.prefix_cache.disk_budget_gb * 1024**3),
                 model_hash=model_hash,
             )
-        engine.set_prefix_cache(memory_cache=memory_cache, disk_cache=disk_cache)
+        engine.set_prefix_cache(
+            memory_cache=memory_cache,
+            disk_cache=disk_cache,
+            block_size=config.prefix_cache.block_size,
+        )
 
         # 4. Create admission controller
         n_layers, n_heads, head_dim = engine.model_arch
@@ -138,7 +173,53 @@ def create_app(config: RuntimeConfig) -> FastAPI:
         )
         engine_thread.start()
 
-        # 7. Mark as ready
+        # 7. Start metrics server on separate bind address
+        metrics_server = None
+        metrics_thread = None
+        try:
+            metrics_host, metrics_port = _parse_bind(config.server.metrics_bind)
+            metrics_server = uvicorn.Server(
+                uvicorn.Config(
+                    create_metrics_app(),
+                    host=metrics_host,
+                    port=metrics_port,
+                    log_level="warning",
+                    access_log=False,
+                )
+            )
+            metrics_thread = threading.Thread(
+                target=metrics_server.run,
+                name="mlxz-metrics",
+                daemon=True,
+            )
+            metrics_thread.start()
+            logger.info("metrics_server_started", bind=config.server.metrics_bind)
+        except Exception:
+            logger.warning(
+                "metrics_server_start_failed",
+                bind=config.server.metrics_bind,
+                exc_info=True,
+            )
+
+        # 8. Start telemetry recorder
+        telemetry = None
+        telemetry_run_id = None
+        try:
+            telemetry = TelemetryRecorder(create_engine_from_config())
+            hw = detect_hardware()
+            telemetry_run_id = telemetry.start_run(
+                config,
+                hardware=f"{hw.chip_name}|{hw.memory_gb}GB",
+                commit_sha=os.environ.get("GITHUB_SHA", "local"),
+            )
+            logger.info("telemetry_started", run_id=telemetry_run_id)
+        except Exception:
+            logger.warning("telemetry_start_failed", exc_info=True)
+
+        app.state.telemetry = telemetry
+        app.state.telemetry_run_id = telemetry_run_id
+
+        # 9. Mark as ready
         _health_state.phase = ServerPhase.READY
         _health_state.engine_alive = True
         _health_state.load_progress = 1.0
@@ -154,6 +235,17 @@ def create_app(config: RuntimeConfig) -> FastAPI:
         await engine.shutdown()
         engine_thread.join(timeout=5)
         bridge.close()
+
+        if metrics_server is not None:
+            metrics_server.should_exit = True
+        if metrics_thread is not None:
+            metrics_thread.join(timeout=5)
+
+        if telemetry is not None and telemetry_run_id is not None:
+            try:
+                telemetry.end_run(telemetry_run_id)
+            finally:
+                telemetry.close(timeout=5.0)
 
         _health_state.phase = ServerPhase.STOPPED
         logger.info("server_stopped")

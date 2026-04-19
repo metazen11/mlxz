@@ -80,6 +80,7 @@ class TestPrefixCacheConfigDefaults:
         assert pc.disk_budget_gb == 50.0
         assert pc.disk_path == Path.home() / ".cache/mlxz/prefix"
         assert pc.disk_tier_enabled is True
+        assert pc.block_size == 8
 
 
 class TestSpeculativeConfigDefaults:
@@ -236,6 +237,14 @@ class TestPrefixCacheConfigValidation:
     def test_disk_budget_negative_rejected(self):
         with pytest.raises(ValidationError, match="disk_budget_gb"):
             PrefixCacheConfig(disk_budget_gb=-1.0)
+
+    def test_block_size_zero_rejected(self):
+        with pytest.raises(ValidationError, match="block_size"):
+            PrefixCacheConfig(block_size=0)
+
+    def test_block_size_over_max_rejected(self):
+        with pytest.raises(ValidationError, match="block_size"):
+            PrefixCacheConfig(block_size=300)
 
 
 class TestRequestLimitsValidation:

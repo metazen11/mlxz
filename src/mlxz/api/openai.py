@@ -7,6 +7,7 @@ endpoints that are wire-compatible with the ``openai-python`` SDK (>= 1.0).
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import structlog
@@ -30,10 +31,9 @@ from mlxz.api.schemas import (
     UsageInfo,
 )
 from mlxz.engine.request import Request as EngineRequest
-from mlxz.engine.single_stream import SingleStreamEngine
 from mlxz.engine.thread_boundary import CancellationRegistry
 from mlxz.scheduler.admission import AdmissionController
-from mlxz.types import AdmissionDecision, RequestState, SamplingParams
+from mlxz.types import AdmissionDecision, EngineProtocol, RequestState, SamplingParams
 
 logger = structlog.get_logger()
 
@@ -43,6 +43,8 @@ router = APIRouter(tags=["openai"])
 openai_router = router
 
 _DEFAULT_TIMEOUT = 300.0  # 5 minutes
+_TOKEN_CHANNEL_DEPTH = 512
+_SSE_TOKEN_BATCH = 16
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +52,7 @@ _DEFAULT_TIMEOUT = 300.0  # 5 minutes
 # ---------------------------------------------------------------------------
 
 
-def get_engine(request: StarletteRequest) -> SingleStreamEngine:
+def get_engine(request: StarletteRequest) -> EngineProtocol:
     """Retrieve the engine from application state."""
     return request.app.state.engine
 
@@ -70,6 +72,14 @@ def get_cancellations(request: StarletteRequest) -> CancellationRegistry:
     return request.app.state.cancellations
 
 
+def get_telemetry(request: StarletteRequest) -> tuple[Any | None, int | None]:
+    """Retrieve optional telemetry recorder state."""
+    return (
+        getattr(request.app.state, "telemetry", None),
+        getattr(request.app.state, "telemetry_run_id", None),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers (DRY)
 # ---------------------------------------------------------------------------
@@ -84,7 +94,7 @@ def _normalize_stop(stop: str | list[str] | None) -> list[str]:
 
 def _check_admission(
     admission: AdmissionController,
-    engine: SingleStreamEngine,
+    engine: EngineProtocol,
     prompt_token_count: int,
     max_tokens: int,
 ) -> None:
@@ -92,6 +102,12 @@ def _check_admission(
     snap = engine.snapshot()
     decision, reason = admission.decide(prompt_token_count, max_tokens, snap)
     if decision != AdmissionDecision.ACCEPT:
+        try:
+            from mlxz.api.metrics import admission_rejections_total
+
+            admission_rejections_total.labels(reason=decision.name.lower()).inc()
+        except Exception:
+            pass
         raise HTTPException(
             status_code=429,
             detail={
@@ -162,6 +178,57 @@ def _make_usage(eng_request: EngineRequest) -> UsageInfo:
     )
 
 
+def _record_request_telemetry(
+    telemetry: Any | None,
+    run_id: int | None,
+    eng_request: EngineRequest,
+) -> None:
+    """Best-effort telemetry capture for completed/cancelled requests."""
+    if telemetry is None or run_id is None:
+        return
+    try:
+        telemetry.record_request(
+            run_id,
+            request_id=eng_request.id,
+            prompt_tokens=eng_request.prompt_token_count,
+            completion_tokens=eng_request.completion_token_count,
+            prefix_cache_hit_tokens=eng_request.prefix_cache_hit_tokens,
+            ttft_ms=eng_request.ttft_ms,
+            decode_tps=eng_request.decode_tps,
+        )
+    except Exception:
+        logger.warning("telemetry_record_request_failed", request_id=eng_request.id, exc_info=True)
+
+
+def _observe_http_metrics(endpoint: str, status_code: int, duration_seconds: float) -> None:
+    """Best-effort Prometheus request metrics."""
+    try:
+        from mlxz.api.metrics import request_duration_seconds, requests_total
+
+        requests_total.labels(endpoint=endpoint, status=str(status_code)).inc()
+        request_duration_seconds.labels(endpoint=endpoint).observe(duration_seconds)
+    except Exception:
+        pass
+
+
+def _inc_active_requests() -> None:
+    try:
+        from mlxz.api.metrics import active_requests
+
+        active_requests.inc()
+    except Exception:
+        pass
+
+
+def _dec_active_requests() -> None:
+    try:
+        from mlxz.api.metrics import active_requests
+
+        active_requests.dec()
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # SSE streaming helper
 # ---------------------------------------------------------------------------
@@ -171,9 +238,13 @@ async def _sse_stream(
     request: EngineRequest,
     model_name: str,
     cancellations: CancellationRegistry,
+    started_at: float,
+    telemetry: Any | None = None,
+    telemetry_run_id: int | None = None,
 ):
     """Async generator yielding SSE-formatted chat completion chunks."""
     request_id = f"chatcmpl-{request.id}"
+    status_code = 200
     try:
         # First chunk: role
         role_chunk = ChatCompletionChunk(
@@ -206,17 +277,51 @@ async def _sse_stream(
                 yield "data: [DONE]\n\n"
                 return
 
+            parts = [token.text]
+            saw_eos = False
+            for _ in range(_SSE_TOKEN_BATCH - 1):
+                try:
+                    maybe_token = request.output_channel.async_q.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if maybe_token is None:
+                    saw_eos = True
+                    break
+                parts.append(maybe_token.text)
+
             content_chunk = ChatCompletionChunk(
                 id=request_id,
                 model=model_name,
                 choices=[
                     ChatCompletionChunkChoice(
-                        delta=ChatCompletionChunkDelta(content=token.text)
+                        delta=ChatCompletionChunkDelta(content="".join(parts))
                     )
                 ],
             )
             yield f"data: {content_chunk.model_dump_json()}\n\n"
+            if saw_eos:
+                final_chunk = ChatCompletionChunk(
+                    id=request_id,
+                    model=model_name,
+                    choices=[
+                        ChatCompletionChunkChoice(
+                            delta=ChatCompletionChunkDelta(),
+                            finish_reason=request.finish_reason,
+                        )
+                    ],
+                    usage=_make_usage(request),
+                )
+                yield f"data: {final_chunk.model_dump_json()}\n\n"
+                yield "data: [DONE]\n\n"
+                return
     finally:
+        _observe_http_metrics(
+            endpoint="/v1/chat/completions",
+            status_code=status_code,
+            duration_seconds=time.perf_counter() - started_at,
+        )
+        _record_request_telemetry(telemetry, telemetry_run_id, request)
+        _dec_active_requests()
         cancellations.cancel(request.id)
         cancellations.unregister(request.id)
 
@@ -229,12 +334,15 @@ async def _sse_stream(
 @router.post("/v1/chat/completions")
 async def chat_completions(
     body: ChatCompletionRequest,
-    engine: SingleStreamEngine = Depends(get_engine),
+    engine: EngineProtocol = Depends(get_engine),
     admission: AdmissionController = Depends(get_admission),
     tokenizer: Any = Depends(get_tokenizer),
     cancellations: CancellationRegistry = Depends(get_cancellations),
+    telemetry_state: tuple[Any | None, int | None] = Depends(get_telemetry),
 ):
     """OpenAI-compatible chat completion endpoint."""
+    t0 = time.perf_counter()
+    status_code = 200
     prompt_tokens = _tokenize_chat(tokenizer, body.messages)
     max_tokens = body.max_tokens or 512
     sampling = _build_sampling(body.temperature, body.top_p, body.seed)
@@ -246,23 +354,32 @@ async def chat_completions(
         prompt_tokens=prompt_tokens,
         max_tokens=max_tokens,
         sampling=sampling,
+        return_logprob=bool(body.logprobs),
         stop_sequences=stop_sequences,
-        channel_depth=64,
+        channel_depth=_TOKEN_CHANNEL_DEPTH,
     )
     eng_request.transition(RequestState.ADMITTED)
     cancellations.register(eng_request.id)
+    _inc_active_requests()
     await engine.submit(eng_request)
 
     model_name = body.model
+    telemetry, telemetry_run_id = telemetry_state
 
-    if body.stream:
-        return StreamingResponse(
-            _sse_stream(eng_request, model_name, cancellations),
-            media_type="text/event-stream",
-        )
-
-    # Non-streaming: collect all tokens with timeout
     try:
+        if body.stream:
+            return StreamingResponse(
+                _sse_stream(
+                    eng_request,
+                    model_name,
+                    cancellations,
+                    t0,
+                    telemetry,
+                    telemetry_run_id,
+                ),
+                media_type="text/event-stream",
+            )
+
         generated_text_parts = await _collect_tokens(eng_request)
         return ChatCompletionResponse(
             id=f"chatcmpl-{eng_request.id}",
@@ -279,20 +396,37 @@ async def chat_completions(
             ],
             usage=_make_usage(eng_request),
         )
+    except HTTPException as exc:
+        status_code = exc.status_code
+        raise
+    except Exception:
+        status_code = 500
+        raise
     finally:
-        cancellations.cancel(eng_request.id)
-        cancellations.unregister(eng_request.id)
+        if not body.stream:
+            _observe_http_metrics(
+                endpoint="/v1/chat/completions",
+                status_code=status_code,
+                duration_seconds=time.perf_counter() - t0,
+            )
+            _record_request_telemetry(telemetry, telemetry_run_id, eng_request)
+            _dec_active_requests()
+            cancellations.cancel(eng_request.id)
+            cancellations.unregister(eng_request.id)
 
 
 @router.post("/v1/completions")
 async def completions(
     body: CompletionRequest,
-    engine: SingleStreamEngine = Depends(get_engine),
+    engine: EngineProtocol = Depends(get_engine),
     admission: AdmissionController = Depends(get_admission),
     tokenizer: Any = Depends(get_tokenizer),
     cancellations: CancellationRegistry = Depends(get_cancellations),
+    telemetry_state: tuple[Any | None, int | None] = Depends(get_telemetry),
 ):
     """OpenAI-compatible text completion endpoint."""
+    t0 = time.perf_counter()
+    status_code = 200
     prompt_text = body.prompt if isinstance(body.prompt, str) else body.prompt[0]
     prompt_tokens: list[int] = tokenizer.encode(prompt_text)
     max_tokens = body.max_tokens or 16
@@ -305,12 +439,15 @@ async def completions(
         prompt_tokens=prompt_tokens,
         max_tokens=max_tokens,
         sampling=sampling,
+        return_logprob=False,
         stop_sequences=stop_sequences,
-        channel_depth=64,
+        channel_depth=_TOKEN_CHANNEL_DEPTH,
     )
     eng_request.transition(RequestState.ADMITTED)
     cancellations.register(eng_request.id)
+    _inc_active_requests()
     await engine.submit(eng_request)
+    telemetry, telemetry_run_id = telemetry_state
 
     try:
         generated_text_parts = await _collect_tokens(eng_request)
@@ -326,18 +463,32 @@ async def completions(
             ],
             usage=_make_usage(eng_request),
         )
+    except HTTPException as exc:
+        status_code = exc.status_code
+        raise
+    except Exception:
+        status_code = 500
+        raise
     finally:
+        _observe_http_metrics(
+            endpoint="/v1/completions",
+            status_code=status_code,
+            duration_seconds=time.perf_counter() - t0,
+        )
+        _record_request_telemetry(telemetry, telemetry_run_id, eng_request)
+        _dec_active_requests()
         cancellations.cancel(eng_request.id)
         cancellations.unregister(eng_request.id)
 
 
 @router.get("/v1/models")
 async def list_models(
-    engine: SingleStreamEngine = Depends(get_engine),
+    engine: EngineProtocol = Depends(get_engine),
 ) -> ModelListResponse:
     """List available models."""
+    model_name = getattr(engine, "model_name", "unknown")
     return ModelListResponse(
         data=[
-            ModelInfo(id=engine.model_name),
+            ModelInfo(id=model_name),
         ]
     )

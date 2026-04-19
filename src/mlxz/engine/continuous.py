@@ -11,6 +11,10 @@ import mlx.nn as nn
 import structlog
 
 from mlxz.config import RuntimeConfig
+from mlxz.engine.decode_compiler import (
+    build_compiled_greedy_chunk,
+    build_compiled_greedy_step,
+)
 from mlxz.engine.request import Request, Token
 from mlxz.engine.sampling import sample
 from mlxz.engine.thread_boundary import CancellationRegistry, MxEvalGuard, RequestBridge
@@ -22,8 +26,11 @@ from mlxz.types import (
     ResidencyBudget,
     ThermalState,
 )
+from mlx.utils import tree_flatten, tree_map, tree_unflatten
 
 logger = structlog.get_logger()
+
+_SINGLE_REQUEST_GREEDY_CHUNK_SIZE = 16
 
 
 class ContinuousBatchingEngine:
@@ -113,7 +120,7 @@ class ContinuousBatchingEngine:
         self,
         memory_cache: PrefixCacheMemory | None = None,
         disk_cache: PrefixCacheDisk | None = None,
-        block_size: int = 256,
+        block_size: int = 8,
     ) -> None:
         """Configure prefix cache tiers. Called from lifespan after model load."""
         self._prefix_cache_memory = memory_cache
@@ -188,6 +195,7 @@ class ContinuousBatchingEngine:
                 rng_key=(
                     mx.random.key(request.sampling.seed)
                     if request.sampling.seed is not None
+                    and request.sampling.temperature != 0.0
                     else None
                 ),
             )
@@ -274,6 +282,7 @@ class ContinuousBatchingEngine:
                 logits = self._model(input_ids, cache=active.cache)
                 mx.eval(logits)
             ttft = time.perf_counter() - t0
+            request.ttft_ms = ttft * 1000.0
 
             # Store in prefix cache on miss
             if n_prefix_tokens == 0 and self._prefix_cache_memory is not None and token_hashes:
@@ -282,6 +291,7 @@ class ContinuousBatchingEngine:
                         token_hashes,
                         active.cache,
                         n_tokens=len(request.prompt_tokens),
+                        block_size=self._prefix_hasher.block_size if self._prefix_hasher else 8,
                     )
                 except Exception:
                     log.warning("prefix_cache_store_failed", exc_info=True)
@@ -297,15 +307,13 @@ class ContinuousBatchingEngine:
                 logits[:, -1, :], request.sampling, active.rng_key
             )
             token_text = self._tokenizer.decode([token_id])
-            try:
-                request.output_channel.sync_q.put_nowait(
-                    Token(token_id, token_text, logprob)
-                )
-            except Exception:
-                pass
+            request.output_channel.sync_q.put(
+                Token(token_id, token_text, logprob)
+            )
             request.completion_token_count = 1
             active.last_token_id = token_id
             active.prefill_done = True
+            active.decode_started_at = time.perf_counter()
             request.transition(RequestState.DECODING)
 
             # Track KV for first generated token
@@ -345,124 +353,310 @@ class ContinuousBatchingEngine:
         eos_token_id = getattr(self._tokenizer, "eos_token_id", None)
         kv_per_token = self._kv_bytes_per_token()
         step_kv = int(kv_per_token)
+        tokenizer_decode = self._tokenizer.decode
 
-        # Fast path: single request — prefetch decode loop (mlx-lm style)
-        # All model forward + sampling inside mx.stream() to avoid cache race.
-        if len(decoding) == 1:
+        decode_groups: dict[int, list[tuple[str, _ActiveRequest]]] = {}
+        for req_id, active in decoding:
+            decode_groups.setdefault(_cache_offset(active.cache), []).append(
+                (req_id, active)
+            )
+
+        # Fast path: single request — compiled greedy decode loop.
+        # Uses MLX compile for the hottest decode path when logprobs are not
+        # requested. This keeps the common single-request case competitive while
+        # leaving multi-request batching untouched.
+        if (
+            len(decoding) == 1
+            and len(self._running) == 1
+            and decoding[0][1].request.sampling.temperature == 0.0
+            and not decoding[0][1].request.sampling.return_logprob
+        ):
             req_id, active = decoding[0]
             request = active.request
             stop_checker = request._stop_checker
-            gen_stream = mx.new_stream(mx.default_device())
+            chunked_fast_path = stop_checker is None
+            compiled_chunk = None
+            compiled_chunk_state = None
+            try:
+                if chunked_fast_path:
+                    compiled_chunk, compiled_chunk_state = build_compiled_greedy_chunk(
+                        self._model,
+                        active.cache,
+                        chunk_size=_SINGLE_REQUEST_GREEDY_CHUNK_SIZE,
+                    )
+                    compiled_step = None
+                    compiled_state = None
+                else:
+                    compiled_step, compiled_state = build_compiled_greedy_step(
+                        self._model, active.cache
+                    )
+            except Exception:
+                logger.warning(
+                    "decode_compile_failed", request_id=req_id, exc_info=True
+                )
+                compiled_step = None
+                compiled_state = None
+                compiled_chunk = None
+                compiled_chunk_state = None
 
-            def _fast_step(y_arr):
-                with mx.stream(gen_stream):
-                    logits = self._model(y_arr[None], cache=active.cache)
-                    logits = logits[:, -1, :]
-                    token = mx.argmax(logits, axis=-1)
-                    return token
+            if (
+                compiled_chunk is None
+                and compiled_chunk_state is None
+                and (compiled_step is None or compiled_state is None)
+            ):
+                # Fall back to the prior synchronous greedy decode path.
+                pass
+            else:
+                for _ in range(32):
+                    if request.completion_token_count >= request.max_tokens:
+                        request.finish_reason = "length"
+                        request.transition(RequestState.COMPLETED)
+                        return
+                    if eos_token_id is not None and active.last_token_id == eos_token_id:
+                        request.finish_reason = "stop"
+                        request.transition(RequestState.COMPLETED)
+                        return
+                    if self._cancellations.is_cancelled(req_id):
+                        return
+                    if stop_checker is not None:
+                        last_text = tokenizer_decode([active.last_token_id])
+                        should_stop, _ = stop_checker.check(last_text)
+                        if should_stop:
+                            request.finish_reason = "stop"
+                            request.transition(RequestState.COMPLETED)
+                            return
 
-            # Start first prefetch
-            y = mx.array([active.last_token_id])
-            next_y = _fast_step(y)
-            mx.async_eval(next_y)
+                    if compiled_chunk is not None and compiled_chunk_state is not None:
+                        remaining = request.max_tokens - request.completion_token_count
+                        if remaining <= 0:
+                            request.finish_reason = "length"
+                            request.transition(RequestState.COMPLETED)
+                            return
+                        chunk_tokens = compiled_chunk(mx.array([[active.last_token_id]]))
+                        mx.eval(chunk_tokens)
+                        chunk_token_ids = chunk_tokens.tolist()
+                        generated_in_chunk = len(chunk_token_ids)
+                        active.kv_charged += step_kv * generated_in_chunk
+                        self._kv_used_bytes += step_kv * generated_in_chunk
+                        for token_id in chunk_token_ids[:remaining]:
+                            token_text = tokenizer_decode([token_id])
+                            request.output_channel.sync_q.put(
+                                Token(token_id, token_text, None)
+                            )
+                            request.completion_token_count += 1
+                            active.last_token_id = token_id
+                            if eos_token_id is not None and token_id == eos_token_id:
+                                request.finish_reason = "stop"
+                                request.transition(RequestState.COMPLETED)
+                                return
+                        if request.completion_token_count >= request.max_tokens:
+                            request.finish_reason = "length"
+                            request.transition(RequestState.COMPLETED)
+                            return
+                        if not self._bridge._submit_queue.sync_q.empty():
+                            return
+                        continue
 
-            for _ in range(32):
-                if request.completion_token_count >= request.max_tokens:
-                    mx.eval(next_y)  # drain in-flight before exit
-                    request.finish_reason = "length"
-                    request.transition(RequestState.COMPLETED)
-                    return
-                if eos_token_id is not None and active.last_token_id == eos_token_id:
-                    mx.eval(next_y)
-                    request.finish_reason = "stop"
-                    request.transition(RequestState.COMPLETED)
-                    return
-                if self._cancellations.is_cancelled(req_id):
-                    mx.eval(next_y)
-                    return
-                if stop_checker is not None:
-                    last_text = self._tokenizer.decode([active.last_token_id])
-                    should_stop, _ = stop_checker.check(last_text)
-                    if should_stop:
+                    next_token = compiled_step(mx.array([[active.last_token_id]]))
+                    mx.eval(next_token)
+                    token_id = next_token.item()
+                    token_text = tokenizer_decode([token_id])
+                    request.output_channel.sync_q.put(
+                        Token(token_id, token_text, None)
+                    )
+                    request.completion_token_count += 1
+                    active.last_token_id = token_id
+                    active.kv_charged += step_kv
+                    self._kv_used_bytes += step_kv
+
+                    if not self._bridge._submit_queue.sync_q.empty():
+                        return
+                return
+
+        if len(decoding) == 1 and len(self._running) == 1:
+            req_id, active = decoding[0]
+            request = active.request
+            if request.sampling.temperature == 0.0:
+                stop_checker = request._stop_checker
+                gen_stream = mx.new_stream(mx.default_device())
+
+                def _fast_step(y_arr):
+                    with mx.stream(gen_stream):
+                        logits = self._model(y_arr[None], cache=active.cache)
+                        logits = logits[:, -1, :]
+                        token = mx.argmax(logits, axis=-1)
+                        return token
+
+                # Start first prefetch
+                y = mx.array([active.last_token_id])
+                next_y = _fast_step(y)
+                mx.async_eval(next_y)
+
+                for _ in range(32):
+                    if request.completion_token_count >= request.max_tokens:
+                        mx.eval(next_y)  # drain in-flight before exit
+                        request.finish_reason = "length"
+                        request.transition(RequestState.COMPLETED)
+                        return
+                    if eos_token_id is not None and active.last_token_id == eos_token_id:
                         mx.eval(next_y)
                         request.finish_reason = "stop"
                         request.transition(RequestState.COMPLETED)
                         return
+                    if self._cancellations.is_cancelled(req_id):
+                        mx.eval(next_y)
+                        return
+                    if stop_checker is not None:
+                        last_text = tokenizer_decode([active.last_token_id])
+                        should_stop, _ = stop_checker.check(last_text)
+                        if should_stop:
+                            mx.eval(next_y)
+                            request.finish_reason = "stop"
+                            request.transition(RequestState.COMPLETED)
+                            return
 
-                # Wait for prefetched result
-                mx.eval(next_y)
+                    # Wait for prefetched result
+                    mx.eval(next_y)
 
-                # Start NEXT prefetch BEFORE delivery (overlap GPU with Python)
-                next_next_y = _fast_step(next_y)
-                mx.async_eval(next_next_y)
+                    # Start NEXT prefetch BEFORE delivery (overlap GPU with Python)
+                    next_next_y = _fast_step(next_y)
+                    mx.async_eval(next_next_y)
 
-                # Deliver current token
-                token_id = next_y.item()
-                token_text = self._tokenizer.decode([token_id])
-                try:
-                    request.output_channel.sync_q.put_nowait(
+                    # Deliver current token
+                    token_id = next_y.item()
+                    token_text = tokenizer_decode([token_id])
+                    request.output_channel.sync_q.put(
                         Token(token_id, token_text, None)
                     )
-                except Exception:
-                    mx.eval(next_next_y)
-                    return
-                request.completion_token_count += 1
-                active.last_token_id = token_id
-                next_y = next_next_y
+                    request.completion_token_count += 1
+                    active.last_token_id = token_id
+                    active.kv_charged += step_kv
+                    self._kv_used_bytes += step_kv
+                    next_y = next_next_y
 
-                if not self._bridge._submit_queue.sync_q.empty():
-                    mx.eval(next_y)  # drain before yielding
-                    return
-            mx.eval(next_y)  # drain at loop boundary
-            return
+                    if not self._bridge._submit_queue.sync_q.empty():
+                        mx.eval(next_y)  # drain before yielding
+                        return
+                mx.eval(next_y)  # drain at loop boundary
+                return
 
-        # Multi-request path: one token per request per iteration
-        for req_id, active in decoding:
-            request = active.request
+        # Batch compatible requests by their current cache offset.
+        for _, group in decode_groups.items():
+            if len(group) == 1:
+                req_id, active = group[0]
+                request = active.request
 
-            if request.completion_token_count >= request.max_tokens:
-                request.finish_reason = "length"
-                request.transition(RequestState.COMPLETED)
-                continue
+                if request.completion_token_count >= request.max_tokens:
+                    request.finish_reason = "length"
+                    request.transition(RequestState.COMPLETED)
+                    continue
 
-            if eos_token_id is not None and active.last_token_id == eos_token_id:
-                request.finish_reason = "stop"
-                request.transition(RequestState.COMPLETED)
-                continue
-
-            if request._stop_checker is not None:
-                last_text = self._tokenizer.decode([active.last_token_id])
-                should_stop, _ = request._stop_checker.check(last_text)
-                if should_stop:
+                if eos_token_id is not None and active.last_token_id == eos_token_id:
                     request.finish_reason = "stop"
                     request.transition(RequestState.COMPLETED)
                     continue
 
-            if active.rng_key is not None:
-                active.rng_key = mx.random.split(active.rng_key)[0]
+                if request._stop_checker is not None:
+                    last_text = tokenizer_decode([active.last_token_id])
+                    should_stop, _ = request._stop_checker.check(last_text)
+                    if should_stop:
+                        request.finish_reason = "stop"
+                        request.transition(RequestState.COMPLETED)
+                        continue
 
-            with self._guard:
-                logits = self._model(
-                    mx.array([[active.last_token_id]]), cache=active.cache
+                if active.rng_key is not None:
+                    active.rng_key = mx.random.split(active.rng_key)[0]
+
+                with self._guard:
+                    logits = self._model(
+                        mx.array([[active.last_token_id]]), cache=active.cache
+                    )
+                    mx.eval(logits)
+
+                token_id, logprob = sample(
+                    logits[:, -1, :], request.sampling, active.rng_key
                 )
-                mx.eval(logits)
-
-            token_id, logprob = sample(
-                logits[:, -1, :], request.sampling, active.rng_key
-            )
-            token_text = self._tokenizer.decode([token_id])
-
-            try:
-                request.output_channel.sync_q.put_nowait(
+                token_text = tokenizer_decode([token_id])
+                request.output_channel.sync_q.put(
                     Token(token_id, token_text, logprob)
                 )
-            except Exception:
+
+                request.completion_token_count += 1
+                active.last_token_id = token_id
+                active.kv_charged += step_kv
+                self._kv_used_bytes += step_kv
                 continue
 
-            request.completion_token_count += 1
-            active.last_token_id = token_id
-            active.kv_charged += step_kv
-            self._kv_used_bytes += step_kv
+            live_group = []
+            for req_id, active in group:
+                request = active.request
+                if request.completion_token_count >= request.max_tokens:
+                    request.finish_reason = "length"
+                    request.transition(RequestState.COMPLETED)
+                    continue
+                if eos_token_id is not None and active.last_token_id == eos_token_id:
+                    request.finish_reason = "stop"
+                    request.transition(RequestState.COMPLETED)
+                    continue
+                if request._stop_checker is not None:
+                    last_text = tokenizer_decode([active.last_token_id])
+                    should_stop, _ = request._stop_checker.check(last_text)
+                    if should_stop:
+                        request.finish_reason = "stop"
+                        request.transition(RequestState.COMPLETED)
+                        continue
+                live_group.append((req_id, active))
+
+            if not live_group:
+                continue
+
+            # Batch only requests whose current cache length is already aligned.
+            # MLX's cache API still requires a shared offset across the batch.
+            batch_size = len(live_group)
+            batched_cache = _build_batched_cache([active.cache for _, active in live_group])
+            batch_tokens = mx.array([[active.last_token_id] for _, active in live_group])
+            with self._guard:
+                logits = self._model(batch_tokens, cache=batched_cache)
+                mx.eval(logits)
+
+            _scatter_batched_cache(
+                batched_cache, [active.cache for _, active in live_group]
+            )
+
+            token_rows = logits[:, -1, :]
+            greedy_batch = all(
+                active.request.sampling.temperature == 0.0
+                and not active.request.sampling.return_logprob
+                for _, active in live_group
+            )
+            if greedy_batch:
+                next_token_ids = mx.argmax(token_rows, axis=-1).tolist()
+            else:
+                next_token_ids = []
+
+            for row_idx, (req_id, active) in enumerate(live_group):
+                request = active.request
+                if active.rng_key is not None:
+                    active.rng_key = mx.random.split(active.rng_key)[0]
+
+                if greedy_batch:
+                    token_id = int(next_token_ids[row_idx])
+                    logprob = None
+                else:
+                    token_id, logprob = sample(
+                        token_rows[row_idx], request.sampling, active.rng_key
+                    )
+
+                token_text = tokenizer_decode([token_id])
+                request.output_channel.sync_q.put(
+                    Token(token_id, token_text, logprob)
+                )
+                request.completion_token_count += 1
+                active.last_token_id = token_id
+                active.kv_charged += step_kv
+                self._kv_used_bytes += step_kv
+
+        return
 
     def _retire_requests(self) -> None:
         """Remove completed/cancelled requests and free resources."""
@@ -484,10 +678,16 @@ class ContinuousBatchingEngine:
                     pass
 
                 log = logger.bind(request_id=req_id)
+                if active.decode_started_at is not None:
+                    decode_duration = max(
+                        time.perf_counter() - active.decode_started_at, 1e-9
+                    )
+                    request.decode_tps = request.completion_token_count / decode_duration
                 log.info(
                     "request_retired",
                     completion_tokens=request.completion_token_count,
                     finish_reason=request.finish_reason,
+                    decode_tps=round(request.decode_tps, 2),
                     batch_size=len(self._running) - 1,
                 )
 
@@ -558,6 +758,9 @@ class _ActiveRequest:
         "rng_key",
         "last_token_id",
         "kv_charged",
+        "decode_started_at",
+        "compiled_step",
+        "compiled_step_state",
     )
 
     def __init__(
@@ -573,6 +776,9 @@ class _ActiveRequest:
         self.rng_key = rng_key
         self.last_token_id: int = 0
         self.kv_charged: int = 0
+        self.decode_started_at: float | None = None
+        self.compiled_step = None
+        self.compiled_step_state = None
 
 
 # -- Type imports at module level for type checking only -------------------
@@ -581,3 +787,41 @@ class _ActiveRequest:
 from mlxz.prefix_cache.memory import PrefixCacheMemory  # noqa: E402
 from mlxz.prefix_cache.disk import PrefixCacheDisk  # noqa: E402
 from mlxz.prefix_cache.hasher import RollingPrefixHasher  # noqa: E402
+
+
+def _cache_offset(cache: list[Any]) -> int:
+    if not cache:
+        return 0
+    first = cache[0]
+    return int(getattr(first, "offset", 0))
+
+
+def _build_batched_cache(caches: list[list[Any]]) -> list[Any]:
+    """Stack per-request caches into a single batched cache."""
+    batched_cache = caches[0]
+    for layer_idx in range(len(batched_cache)):
+        layer_states = [cache[layer_idx].state for cache in caches]
+        batched_state = tree_map(lambda *xs: mx.concatenate(xs, axis=0), *layer_states)
+        batched_cache[layer_idx].state = batched_state
+    return batched_cache
+
+
+def _scatter_batched_cache(batched_cache: list[Any], caches: list[list[Any]]) -> None:
+    """Split a batched cache back into per-request caches."""
+    batch_size = len(caches)
+    per_layer_states = [
+        _unbatch_tree(layer_cache.state, batch_size) for layer_cache in batched_cache
+    ]
+    for request_idx, cache in enumerate(caches):
+        for layer_idx, layer_cache in enumerate(cache):
+            layer_cache.state = per_layer_states[layer_idx][request_idx]
+
+
+def _unbatch_tree(tree: Any, batch_size: int) -> list[Any]:
+    """Split a batched pytree into one tree per batch element."""
+    leaves = tree_flatten(tree)
+    per_batch: list[list[tuple[str, Any]]] = [[] for _ in range(batch_size)]
+    for path, leaf in leaves:
+        for idx in range(batch_size):
+            per_batch[idx].append((path, mx.expand_dims(leaf[idx], axis=0)))
+    return [tree_unflatten(items) for items in per_batch]

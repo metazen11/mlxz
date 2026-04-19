@@ -15,6 +15,13 @@ def _make_mock_kv_cache(n_layers: int = 2, seq_len: int = 4, head_dim: int = 8):
         @property
         def state(self):
             return (self._keys, self._values)
+        def is_trimmable(self):
+            return True
+        def trim(self, num_tokens):
+            if num_tokens <= 0:
+                return
+            self._keys = self._keys[:, :, :-num_tokens, :]
+            self._values = self._values[:, :, :-num_tokens, :]
     return [MockKVCache(seq_len, head_dim) for _ in range(n_layers)]
 
 
@@ -53,6 +60,18 @@ class TestPrefixCacheMemory:
 
         n_matched, kv_states = cache.lookup_sync(long_hashes)
         assert n_matched > 0  # found the 2-chunk prefix
+        assert kv_states is not None
+
+    def test_shared_prefix_boundary_is_cached(self):
+        """Long prompts should cache intermediate chunk-boundary prefixes."""
+        cache = PrefixCacheMemory(memory_budget_bytes=10_000_000)
+        full_hashes = _make_hashes(4)
+        kv = _make_mock_kv_cache(seq_len=8)
+        cache.store_sync(full_hashes, kv, block_size=2)
+
+        prefix_hashes = full_hashes[:2]
+        n_matched, kv_states = cache.lookup_sync(prefix_hashes)
+        assert n_matched == 4
         assert kv_states is not None
 
     def test_lru_eviction(self):

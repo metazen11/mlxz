@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import Literal, Self
 
 from pydantic import BaseModel, Field, SecretStr, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    TomlConfigSettingsSource,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +51,7 @@ class PrefixCacheConfig(BaseModel):
     disk_budget_gb: float = Field(default=50.0, gt=0)
     disk_path: Path = Path.home() / ".cache/mlxz/prefix"
     disk_tier_enabled: bool = True
+    block_size: int = Field(default=8, ge=1, le=256)
 
     # NOTE: At runtime the engine appends a model-name hash to ``disk_path``
     # so that different models never share on-disk prefix data.
@@ -145,3 +151,21 @@ class RuntimeConfig(BaseSettings):
     speculative: SpeculativeConfig = Field(default_factory=SpeculativeConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Enable TOML loading in addition to init kwargs and environment."""
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+            TomlConfigSettingsSource(settings_cls),
+        )

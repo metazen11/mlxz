@@ -40,7 +40,8 @@ def run_mlxz(url: str, model: str, prompt: str, max_tokens: int) -> dict:
     """Run a single streaming request against mlxz and return timing data."""
     t0 = time.perf_counter()
     first_token_time: float | None = None
-    tokens: list[str] = []
+    chunks: list[str] = []
+    completion_tokens_from_usage = 0
 
     with httpx.Client(timeout=120) as client:
         with client.stream(
@@ -51,6 +52,8 @@ def run_mlxz(url: str, model: str, prompt: str, max_tokens: int) -> dict:
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens,
                 "stream": True,
+                "temperature": 0,
+                "seed": 42,
             },
             headers={"Content-Type": "application/json"},
         ) as resp:
@@ -66,12 +69,16 @@ def run_mlxz(url: str, model: str, prompt: str, max_tokens: int) -> dict:
                 if content:
                     if first_token_time is None:
                         first_token_time = time.perf_counter()
-                    tokens.append(content)
+                    chunks.append(content)
+                if chunk.get("usage"):
+                    completion_tokens_from_usage = chunk["usage"].get(
+                        "completion_tokens", completion_tokens_from_usage
+                    )
 
     total = time.perf_counter() - t0
     ttft = (first_token_time - t0) if first_token_time else total
     decode_time = total - ttft
-    n_tokens = len(tokens)
+    n_tokens = completion_tokens_from_usage or len(chunks)
 
     return {
         "system": "mlxz",
@@ -79,7 +86,7 @@ def run_mlxz(url: str, model: str, prompt: str, max_tokens: int) -> dict:
         "ttft_ms": round(ttft * 1000, 1),
         "decode_tps": round(n_tokens / decode_time, 1) if decode_time > 0 else 0,
         "total_ms": round(total * 1000, 1),
-        "output": "".join(tokens),
+        "output": "".join(chunks),
     }
 
 
@@ -92,18 +99,27 @@ def run_mlx_lm(model_path: str, prompt: str, max_tokens: int) -> dict:
     mlx_lm.generate(model, tokenizer, prompt="Hi", max_tokens=1, verbose=False)
 
     t0 = time.perf_counter()
-    output = mlx_lm.generate(
-        model, tokenizer, prompt=prompt, max_tokens=max_tokens, verbose=False
-    )
+    first_token_time: float | None = None
+    parts: list[str] = []
+    n_tokens = 0
+    for step in mlx_lm.stream_generate(
+        model, tokenizer, prompt=prompt, max_tokens=max_tokens
+    ):
+        if step.text:
+            if first_token_time is None:
+                first_token_time = time.perf_counter()
+            parts.append(step.text)
+            n_tokens += 1
+    output = "".join(parts)
     total = time.perf_counter() - t0
-
-    n_tokens = len(tokenizer.encode(output))
+    ttft = (first_token_time - t0) if first_token_time else total
+    decode_time = total - ttft
 
     return {
         "system": "mlx-lm",
         "tokens": n_tokens,
-        "ttft_ms": round(total * 1000 / max(n_tokens, 1), 1),
-        "decode_tps": round(n_tokens / total, 1) if total > 0 else 0,
+        "ttft_ms": round(ttft * 1000, 1),
+        "decode_tps": round(n_tokens / decode_time, 1) if decode_time > 0 else 0,
         "total_ms": round(total * 1000, 1),
         "output": output,
     }

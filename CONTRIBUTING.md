@@ -23,6 +23,19 @@ docs(whitepaper): update KV-cache memory model diagram
 2. **What test proves correctness?** Link to the new or existing tests that cover the change.
 3. **What is the rollback plan?** How do we undo this if it regresses silently in two weeks?
 
+## Performance PR gate
+
+If a PR changes the engine, scheduler, cache policy, or benchmark harness, it is a performance PR.
+
+Performance PRs must include:
+
+- A baseline run on `Llama-3.1-8B-Instruct-4bit`.
+- The same change measured on at least two additional models, preferably one smaller and one larger.
+- A short note explaining whether the change is intended to improve `TTFT`, decode throughput, concurrency, or memory fit.
+- A rejected-ideas note if the optimization was attempted and discarded before landing.
+
+If the optimization only helps one model size, say that explicitly. Do not generalize it into a broad engine claim.
+
 ## Dependencies
 
 **No new dependency without justification** in the PR body. Address:

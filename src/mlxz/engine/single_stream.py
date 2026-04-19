@@ -11,6 +11,10 @@ import structlog
 
 from mlxz.config import RuntimeConfig
 from mlxz.engine.request import Request, Token
+from mlxz.engine.decode_compiler import (
+    build_compiled_greedy_chunk,
+    build_compiled_greedy_step,
+)
 from mlxz.engine.sampling import sample
 from mlxz.engine.thread_boundary import CancellationRegistry, MxEvalGuard, RequestBridge
 from mlxz.types import (
@@ -103,7 +107,7 @@ class SingleStreamEngine:
         self,
         memory_cache: PrefixCacheMemory | None = None,
         disk_cache: PrefixCacheDisk | None = None,
-        block_size: int = 256,
+        block_size: int = 8,
     ) -> None:
         """Configure prefix cache tiers. Called from lifespan after model load."""
         self._prefix_cache_memory = memory_cache
@@ -154,6 +158,8 @@ class SingleStreamEngine:
         assert self._guard is not None
 
         log = logger.bind(request_id=request.id)
+        tokenizer_decode = self._tokenizer.decode
+        token_put = request.output_channel.sync_q.put
         log.info(
             "request_processing",
             prompt_tokens=request.prompt_token_count,
@@ -238,6 +244,7 @@ class SingleStreamEngine:
                 mx.eval(logits)
 
             ttft = time.perf_counter() - t0
+            request.ttft_ms = ttft * 1000.0
 
             # --- Store in memory cache on miss ---
             if (
@@ -247,7 +254,10 @@ class SingleStreamEngine:
             ):
                 try:
                     self._prefix_cache_memory.store_sync(
-                        token_hashes, cache, n_tokens=len(request.prompt_tokens)
+                        token_hashes,
+                        cache,
+                        n_tokens=len(request.prompt_tokens),
+                        block_size=self._prefix_hasher.block_size if self._prefix_hasher else 8,
                     )
                 except Exception:
                     log.warning("prefix_cache_store_failed", exc_info=True)
@@ -277,18 +287,63 @@ class SingleStreamEngine:
             # Transition to decoding
             request.transition(RequestState.DECODING)
 
+            greedy_fast_path = (
+                request.sampling.temperature == 0.0
+                and not request.sampling.return_logprob
+            )
+            chunked_fast_path = greedy_fast_path and request._stop_checker is None
+
             # Initialize RNG key for deterministic sampling
             rng_key = (
                 mx.random.key(request.sampling.seed)
                 if request.sampling.seed is not None
+                and request.sampling.temperature != 0.0
                 else None
             )
 
             # First token from prefill logits
-            token_id, logprob = sample(logits[:, -1, :], request.sampling, rng_key)
-            token_text = self._tokenizer.decode([token_id])
-            request.output_channel.sync_q.put(Token(token_id, token_text, logprob))
+            if greedy_fast_path:
+                token_id = mx.argmax(logits[:, -1, :], axis=-1).item()
+                logprob = None
+            else:
+                token_id, logprob = sample(
+                    logits[:, -1, :], request.sampling, rng_key
+                )
+            token_text = tokenizer_decode([token_id])
+            token_put(Token(token_id, token_text, logprob))
             request.completion_token_count = 1
+
+            compiled_step = None
+            compiled_state = None
+            compiled_chunk = None
+            compiled_chunk_state = None
+            decode_start = time.perf_counter()
+            if chunked_fast_path:
+                try:
+                    compiled_chunk, compiled_chunk_state = build_compiled_greedy_chunk(
+                        self._model, cache
+                    )
+                except Exception:
+                    logger.warning(
+                        "decode_compile_failed",
+                        request_id=request.id,
+                        exc_info=True,
+                    )
+                    compiled_chunk = None
+                    compiled_chunk_state = None
+            elif greedy_fast_path:
+                try:
+                    compiled_step, compiled_state = build_compiled_greedy_step(
+                        self._model, cache
+                    )
+                except Exception:
+                    logger.warning(
+                        "decode_compile_failed",
+                        request_id=request.id,
+                        exc_info=True,
+                    )
+                    compiled_step = None
+                    compiled_state = None
 
             # Track KV for first generated token
             step_kv = int(kv_per_token)
@@ -299,7 +354,6 @@ class SingleStreamEngine:
             eos_token_id = getattr(self._tokenizer, "eos_token_id", None)
 
             # Decode loop
-            decode_start = time.perf_counter()
 
             for _step in range(request.max_tokens - 1):
                 # Check cancellation
@@ -325,24 +379,51 @@ class SingleStreamEngine:
                         log.debug("stop_sequence_matched", sequence=matched)
                         break
 
-                # Advance RNG
-                if rng_key is not None:
-                    rng_key = mx.random.split(rng_key)[0]
+                if compiled_chunk is not None and compiled_chunk_state is not None:
+                    remaining = request.max_tokens - request.completion_token_count
+                    if remaining <= 0:
+                        break
+                    chunk_tokens = compiled_chunk(mx.array([[token_id]]))
+                    mx.eval(chunk_tokens)
+                    chunk_token_ids = chunk_tokens.tolist()
+                    generated_in_chunk = len(chunk_token_ids)
+                    kv_charged += step_kv * generated_in_chunk
+                    self._kv_used_bytes += step_kv * generated_in_chunk
+                    for next_token_id in chunk_token_ids[:remaining]:
+                        token_id = next_token_id
+                        logprob = None
+                        token_text = tokenizer_decode([token_id])
+                        token_put(Token(token_id, token_text, logprob))
+                        request.completion_token_count += 1
+                        if eos_token_id is not None and token_id == eos_token_id:
+                            request.finish_reason = "stop"
+                            break
+                    if request.finish_reason == "stop":
+                        break
+                    continue
+                elif compiled_step is not None and compiled_state is not None:
+                    next_token = compiled_step(mx.array([[token_id]]))
+                    mx.eval(next_token)
+                    token_id = next_token.item()
+                    logprob = None
+                else:
+                    # Advance RNG
+                    if rng_key is not None:
+                        rng_key = mx.random.split(rng_key)[0]
 
-                # Decode step
-                with self._guard:
-                    logits = self._model(mx.array([[token_id]]), cache=cache)
-                    mx.eval(logits)
+                    # Decode step
+                    with self._guard:
+                        logits = self._model(mx.array([[token_id]]), cache=cache)
+                        mx.eval(logits)
 
-                token_id, logprob = sample(
-                    logits[:, -1, :], request.sampling, rng_key
-                )
-                token_text = self._tokenizer.decode([token_id])
+                    token_id, logprob = sample(
+                        logits[:, -1, :], request.sampling, rng_key
+                    )
+
+                token_text = tokenizer_decode([token_id])
 
                 # Put token on channel (blocks if full -- backpressure)
-                request.output_channel.sync_q.put(
-                    Token(token_id, token_text, logprob)
-                )
+                token_put(Token(token_id, token_text, logprob))
                 request.completion_token_count += 1
 
                 # Update KV tracking
@@ -361,6 +442,7 @@ class SingleStreamEngine:
                 if decode_duration > 0
                 else 0
             )
+            request.decode_tps = decode_tps
             log.info(
                 "request_completed",
                 completion_tokens=request.completion_token_count,

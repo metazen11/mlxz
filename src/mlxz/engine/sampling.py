@@ -31,7 +31,7 @@ def sample(
     # Greedy
     if params.temperature == 0.0:
         token_id = mx.argmax(logits).item()
-        logprob = _logprob_for_token(logits, token_id)
+        logprob = _logprob_for_token(logits, token_id) if params.return_logprob else None
         return token_id, logprob
 
     # Save pre-filter logits for accurate logprob computation
@@ -59,7 +59,7 @@ def sample(
         token_id = mx.random.categorical(filtered[None, :]).item()
 
     # Logprob from pre-filter distribution (OpenAI-compatible)
-    logprob = _logprob_for_token(raw_logits, token_id)
+    logprob = _logprob_for_token(raw_logits, token_id) if params.return_logprob else None
     return token_id, logprob
 
 

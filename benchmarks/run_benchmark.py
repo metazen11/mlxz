@@ -99,7 +99,8 @@ def benchmark_mlxz(
     """Benchmark mlxz via streaming HTTP to get accurate TTFT."""
     t0 = time.perf_counter()
     first_token_time: float | None = None
-    total_tokens = 0
+    content_chunks = 0
+    completion_tokens_from_usage = 0
     prompt_token_count = 0
 
     with httpx.Client(timeout=120) as client:
@@ -111,6 +112,8 @@ def benchmark_mlxz(
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens,
                 "stream": True,
+                "temperature": 0,
+                "seed": 42,
             },
             headers={"Content-Type": "application/json"},
         ) as resp:
@@ -126,14 +129,18 @@ def benchmark_mlxz(
                 if delta.get("content"):
                     if first_token_time is None:
                         first_token_time = time.perf_counter()
-                    total_tokens += 1
+                    content_chunks += 1
                 # Usage may appear in the final chunk
                 if chunk.get("usage"):
                     prompt_token_count = chunk["usage"].get(
                         "prompt_tokens", prompt_token_count
                     )
+                    completion_tokens_from_usage = chunk["usage"].get(
+                        "completion_tokens", completion_tokens_from_usage
+                    )
 
     total_time = time.perf_counter() - t0
+    total_tokens = completion_tokens_from_usage or content_chunks
     ttft = (
         (first_token_time - t0) * 1000
         if first_token_time is not None
@@ -196,17 +203,28 @@ def benchmark_mlx_lm(
         prompt_ids = list(template_result)
 
     t0 = time.perf_counter()
-    output = mlx_lm.generate(
+    first_token_time: float | None = None
+    output_parts: list[str] = []
+    output_tokens = 0
+    for step in mlx_lm.stream_generate(
         model,
         tokenizer,
         prompt=prompt,
         max_tokens=max_tokens,
-        verbose=False,
-    )
+    ):
+        if step.text:
+            if first_token_time is None:
+                first_token_time = time.perf_counter()
+            output_parts.append(step.text)
+            output_tokens += 1
     total_time = time.perf_counter() - t0
-
-    output_tokens = len(tokenizer.encode(output))
-    decode_tps = output_tokens / total_time if total_time > 0 else 0.0
+    ttft_ms = (
+        (first_token_time - t0) * 1000
+        if first_token_time is not None
+        else total_time * 1000
+    )
+    decode_time = total_time - (ttft_ms / 1000)
+    decode_tps = output_tokens / decode_time if decode_time > 0 else 0.0
 
     return BenchmarkResult(
         system="mlx-lm",
@@ -214,8 +232,7 @@ def benchmark_mlx_lm(
         prompt_tokens=len(prompt_ids),
         max_tokens=max_tokens,
         completion_tokens=output_tokens,
-        # mlx_lm.generate doesn't expose TTFT; approximate as latency / tokens
-        ttft_ms=round(total_time * 1000 / max(output_tokens, 1), 2),
+        ttft_ms=round(ttft_ms, 2),
         decode_tps=round(decode_tps, 2),
         total_latency_ms=round(total_time * 1000, 2),
         timestamp=datetime.now().isoformat(),
@@ -333,6 +350,12 @@ def main() -> None:
         help="Runs per configuration; median is kept (default: %(default)s)",
     )
     parser.add_argument(
+        "--fail-on-regression",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Exit non-zero when baseline regressions are detected (default: true)",
+    )
+    parser.add_argument(
         "--skip-mlx-lm",
         action="store_true",
         help="Skip mlx-lm direct benchmarks (mlxz-only mode)",
@@ -426,12 +449,15 @@ def main() -> None:
         print(f"Baseline saved to {baseline_file}")
     else:
         # Compare against baseline
-        _compare_baseline(baseline_file, all_results)
+        regressions = _compare_baseline(baseline_file, all_results)
+        if regressions > 0 and args.fail_on_regression:
+            print("\nFailing due to benchmark regressions.")
+            sys.exit(1)
 
 
 def _compare_baseline(
     baseline_path: Path, current: list[BenchmarkResult]
-) -> None:
+) -> int:
     """Compare current results against a saved baseline and flag regressions."""
     with open(baseline_path) as f:
         baseline_data = json.load(f)
@@ -443,6 +469,7 @@ def _compare_baseline(
             r
             for r in current
             if r.system == br["system"]
+            and r.model == br["model"]
             and r.prompt_tokens == br["prompt_tokens"]
             and r.max_tokens == br["max_tokens"]
         ]
@@ -466,6 +493,7 @@ def _compare_baseline(
         print(f"\n  WARNING: {regressions} regression(s) detected (>10% slower)")
     else:
         print("\n  All results within 10% of baseline.")
+    return regressions
 
 
 if __name__ == "__main__":

@@ -1,0 +1,24 @@
+[
+  {
+    "system": "mlxz",
+    "model": "mlx-community/Llama-3.1-8B-Instruct-4bit",
+    "prompt_tokens": 107,
+    "max_tokens": 128,
+    "completion_tokens": 128,
+    "ttft_ms": 49.08,
+    "decode_tps": 76.42,
+    "total_latency_ms": 1723.94,
+    "timestamp": "2026-04-18T20:26:35.175619"
+  },
+  {
+    "system": "mlx-lm",
+    "model": "mlx-community/Llama-3.1-8B-Instruct-4bit",
+    "prompt_tokens": 107,
+    "max_tokens": 128,
+    "completion_tokens": 127,
+    "ttft_ms": 137.51,
+    "decode_tps": 77.06,
+    "total_latency_ms": 1785.63,
+    "timestamp": "2026-04-18T20:26:42.117892"
+  }
+]

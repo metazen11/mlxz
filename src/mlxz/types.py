@@ -30,6 +30,7 @@ class SamplingParams:
     """``-1`` disables top-k filtering."""
     min_p: float = 0.0
     seed: int | None = None
+    return_logprob: bool = True
     stop: list[str] = field(default_factory=list)
     """Stop sequences — generation halts when any is produced."""
 

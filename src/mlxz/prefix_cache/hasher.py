@@ -12,11 +12,12 @@ class RollingPrefixHasher:
     chunk may be partial (fewer than block_size tokens). Returns a tuple
     of bytes (hashable, usable as dict keys).
 
-    Block size of 256 matches mlx-lm's KVCache.step allocation granularity,
-    minimizing waste when restoring partial prefixes.
+    Smaller block sizes increase the chance of reusing short shared prefixes
+    (useful for agent-style workloads). Larger block sizes reduce hash churn
+    and metadata overhead but require longer identical prefixes to hit.
     """
 
-    def __init__(self, block_size: int = 256) -> None:
+    def __init__(self, block_size: int = 8) -> None:
         if block_size < 1:
             raise ValueError(f"block_size must be >= 1, got {block_size}")
         self._block_size = block_size
