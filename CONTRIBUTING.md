@@ -36,6 +36,8 @@ Performance PRs must include:
 
 If the optimization only helps one model size, say that explicitly. Do not generalize it into a broad engine claim.
 
+This gate is enforced by the project contract in [CONTRACT.md](CONTRACT.md).
+
 ## Dependencies
 
 **No new dependency without justification** in the PR body. Address:

@@ -4,6 +4,8 @@ mlxz exists to answer a narrow question: which serving ideas from vLLM can be ma
 
 The project is engine-first. The API, observability, and benchmark harness matter because they let us prove whether an optimization is real. They are not the product.
 
+The operating contract for that loop lives in [../CONTRACT.md](../CONTRACT.md). This whitepaper states the thesis; the contract defines the continual improvement process that keeps us honest until the engine wins consistently enough to support adoption.
+
 ## What We Are Trying To Port
 
 - Continuous batching for concurrent requests

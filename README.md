@@ -217,6 +217,10 @@ src/mlxz/
 
 Read [docs/whitepaper.md](docs/whitepaper.md) for the explicit engine thesis: port the useful parts of vLLM's serving model to MLX, measure them honestly, and keep only the ideas that actually improve Apple Silicon inference.
 
+The project contract is in [CONTRACT.md](CONTRACT.md). It defines the continual
+test-improve-measure loop that governs performance work until the engine is
+consistently better than plain `mlx-lm` on the agreed workloads.
+
 ## Requirements
 
 - macOS with Apple Silicon (M1/M2/M3/M4)
