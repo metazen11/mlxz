@@ -1,0 +1,33 @@
+name: correctness
+on:
+  schedule: [{ cron: "0 6 * * *" }]
+  workflow_dispatch: {}
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: correctness
+  cancel-in-progress: false
+
+jobs:
+  correctness:
+    if: >
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'release')
+    runs-on: [self-hosted, m4-max, 64gb]
+    timeout-minutes: 420
+    steps:
+      - uses: actions/checkout@v4
+        with: { lfs: true }
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --all-extras
+      - run: uv run pytest tests/correctness -v --junitxml=correctness.xml --timeout=3600
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: correctness-${{ github.sha }}
+          path: correctness.xml
+          retention-days: 14

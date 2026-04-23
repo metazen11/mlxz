@@ -1,0 +1,90 @@
+name: Performance Regression
+description: Report a performance regression
+title: "[perf]: "
+labels: ["performance", "regression"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to report a measurable performance regression. Include before/after numbers.
+
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: Model name and quantization (e.g. Llama-3.1-8B-Instruct Q4)
+      placeholder: "Llama-3.3-70B-Instruct Q4"
+    validations:
+      required: true
+
+  - type: input
+    id: quant
+    attributes:
+      label: Quantization
+      description: Quantization level (Q4, Q8, FP16, etc.)
+      placeholder: "Q4"
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      description: Chip, RAM, and any relevant config (e.g. wired limit)
+      placeholder: "M4 Max, 64 GB, wired_limit=56000"
+    validations:
+      required: true
+
+  - type: input
+    id: delta
+    attributes:
+      label: tok/s delta
+      description: "Before and after throughput (e.g. 14.2 -> 11.8 tok/s, -17%)"
+      placeholder: "14.2 -> 11.8 tok/s (-17%)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Exact commands to reproduce the regression.
+      placeholder: |
+        1. Checkout commit abc123
+        2. Run `mlxz bench --model ... --prompt ...`
+        3. Compare against baseline commit def456
+    validations:
+      required: true
+
+  - type: input
+    id: good_commit
+    attributes:
+      label: Last known good commit
+      description: Git SHA or version where performance was acceptable.
+    validations:
+      required: false
+
+  - type: input
+    id: bad_commit
+    attributes:
+      label: First known bad commit
+      description: Git SHA or version where regression appeared.
+    validations:
+      required: false
+
+  - type: textarea
+    id: bench_output
+    attributes:
+      label: Benchmark output
+      description: Paste the full `mlxz bench --regression` output if available.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Any other context (thermal state, concurrent load, etc.)
+    validations:
+      required: false

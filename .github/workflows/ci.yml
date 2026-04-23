@@ -1,0 +1,127 @@
+name: ci
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-lint-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: uv-lint-${{ runner.os }}-
+      - run: uv sync --all-extras
+      - name: Check lockfile is up to date
+        run: uv lock --check
+      - name: Ruff lint
+        run: uv run ruff check src tests
+      - name: Ruff format
+        run: uv run ruff format --check src tests
+      - name: Dependency audit (CVE scan)
+        run: uv run pip-audit --strict
+
+  typecheck:
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-tc-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: uv-tc-${{ runner.os }}-
+      - run: uv sync --all-extras
+      - name: Pyright strict type checking
+        run: uv run pyright src
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-sec-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: uv-sec-${{ runner.os }}-
+      - run: uv sync --all-extras
+      - name: Bandit security scan
+        run: uv run bandit -r src/mlxz/ -ll -f json -o security-report.json || true
+      - name: Upload security report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-report
+          path: security-report.json
+          retention-days: 30
+
+  unit:
+    runs-on: macos-14
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with: { lfs: true }
+      - uses: astral-sh/setup-uv@v3
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-unit-${{ runner.os }}-py${{ matrix.python }}-${{ hashFiles('uv.lock') }}
+          restore-keys: uv-unit-${{ runner.os }}-py${{ matrix.python }}-
+      - run: uv sync --all-extras
+      - name: Run unit + integration tests
+        run: uv run pytest tests/unit tests/integration -v --timeout=30 --junitxml=test-results.xml -k "not self_hosted"
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-py${{ matrix.python }}
+          path: test-results.xml
+          retention-days: 14
+
+  unit-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-unit-linux-${{ hashFiles('uv.lock') }}
+          restore-keys: uv-unit-linux-
+      - run: uv sync --extra dev
+      - name: Run platform-independent unit tests
+        run: uv run pytest tests/unit -k "not metal" --timeout=30 --junitxml=test-results-linux.xml
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-linux
+          path: test-results-linux.xml
+          retention-days: 14
+
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --extra dev
+      - name: Build documentation
+        run: uv run mkdocs build --strict
