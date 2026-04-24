@@ -15,6 +15,7 @@ from mlxz.engine.decode_compiler import (
     build_compiled_greedy_chunk,
     build_compiled_greedy_step,
 )
+from mlxz.engine.cache_quant import maybe_quantize_kv_cache
 from mlxz.engine.request import Request, Token
 from mlxz.engine.sampling import sample
 from mlxz.engine.thread_boundary import CancellationRegistry, MxEvalGuard, RequestBridge
@@ -217,7 +218,6 @@ class ContinuousBatchingEngine:
 
             request = active.request
             log = logger.bind(request_id=req_id)
-
             # Prefix cache lookup
             n_prefix_tokens = 0
             token_hashes: tuple[bytes, ...] = ()
@@ -226,7 +226,7 @@ class ContinuousBatchingEngine:
             if self._prefix_hasher is not None:
                 token_hashes = self._prefix_hasher.hash_chunks(request.prompt_tokens)
 
-                # Try memory cache first
+                # Try memory cache first.
                 if self._prefix_cache_memory is not None:
                     n_matched, cached_kv = self._prefix_cache_memory.lookup_sync(
                         token_hashes
@@ -237,7 +237,7 @@ class ContinuousBatchingEngine:
                         for layer_cache, cached_state in zip(active.cache, cached_kv):
                             layer_cache.state = cached_state
 
-                # Fall back to disk cache
+                # Fall back to disk cache.
                 if n_prefix_tokens == 0 and self._prefix_cache_disk is not None:
                     n_matched, cached_kv = self._prefix_cache_disk.lookup_sync(
                         token_hashes
@@ -285,7 +285,11 @@ class ContinuousBatchingEngine:
             request.ttft_ms = ttft * 1000.0
 
             # Store in prefix cache on miss
-            if n_prefix_tokens == 0 and self._prefix_cache_memory is not None and token_hashes:
+            if (
+                n_prefix_tokens == 0
+                and self._prefix_cache_memory is not None
+                and token_hashes
+            ):
                 try:
                     self._prefix_cache_memory.store_sync(
                         token_hashes,
@@ -307,9 +311,7 @@ class ContinuousBatchingEngine:
                 logits[:, -1, :], request.sampling, active.rng_key
             )
             token_text = self._tokenizer.decode([token_id])
-            request.output_channel.sync_q.put(
-                Token(token_id, token_text, logprob)
-            )
+            request.output_channel.sync_q.put(Token(token_id, token_text, logprob))
             request.completion_token_count = 1
             active.last_token_id = token_id
             active.prefill_done = True
@@ -655,6 +657,12 @@ class ContinuousBatchingEngine:
                 active.last_token_id = token_id
                 active.kv_charged += step_kv
                 self._kv_used_bytes += step_kv
+                maybe_quantize_kv_cache(
+                    active.cache,
+                    self._config.kv.quantized_kv_start,
+                    self._config.kv.group_size,
+                    self._config.kv.bits,
+                )
 
         return
 

@@ -92,6 +92,8 @@ class Request:
 
         Raises ValueError on invalid transition.
         """
+        if new_state == self.state:
+            return
         valid = self._TRANSITIONS.get(self.state, set())
         if new_state not in valid:
             raise ValueError(

@@ -46,6 +46,8 @@ Current entry:
 - `mx.async_eval()` prefetch in the shared engine/cache path: crashed on generations over 64 tokens because cache state became inconsistent across streams.
 - `mx.compile()` on the decode step: safe, but only a small win. On the current matrix it improved 8B by about 1.6%, 3B by about 0.3%, and 14B by about 1.4%. Not enough to close the mlx-lm gap by itself.
 - Speculative decoding with a 3B draft model on the 8B target: started after wiring `set_prefix_cache()` into the engine, but the current implementation was slower than plain single-stream decoding and worse than `mlx-lm` on the same benchmark. Keep it out of the default path until the draft-target cache reuse story is stronger.
+- KV-cache quantization forced from token 0 on the 8-request agent workload: median TTFT regressed from `873.6 ms` to `1059.8 ms`, and aggregate throughput regressed from `40.78 tok/s` to `29.04 tok/s`. The helper wiring stays in the codebase, but this setting is rejected for the current serving target.
+- Chunked prefill with `chunk_size=32` on the same 8-request agent workload: median TTFT regressed from `873.6 ms` to `1294.3 ms`, and aggregate throughput regressed from `40.78 tok/s` to `22.99 tok/s`. The scheduler path is not a win for the current engine shape.
 
 ---
 
@@ -196,6 +198,36 @@ def _compiled_decode_step(model, token_id, cache):
 - Agent workload, 8 concurrent requests, improved to median TTFT 597.1 ms, p95 TTFT 1001.9 ms, median decode throughput 11.00 tok/s, aggregate throughput 83.28 tok/s, wall time 12.30 s.
 
 **Status:** PROMISING. This is the first Python-level batching change that materially improved the concurrent agent workload. The remaining question is how much more benefit we can get by widening the compatibility rule or moving the same idea into MLX itself.
+
+---
+
+## Experiment 12: Ragged Batch Decode
+
+**Hypothesis:** A more vLLM-like ragged batch, using batch-offset RoPE plus an explicit causal mask, could let the engine batch requests with different cache offsets in a single decode pass.
+
+**Change:** Batch all live decode requests into one ragged cache, patch RoPE to accept vector offsets, and supply an explicit length mask to the attention kernel.
+
+**Measured result on `Llama-3.1-8B-Instruct-4bit`:**
+- Single-request comparison regressed to `mlxz` 33.0 tok/s vs `mlx-lm` 45.2 tok/s.
+- Agent workload, 8 concurrent requests, regressed to median TTFT 788.3 ms, p95 TTFT 1283.8 ms, median decode throughput 6.71 tok/s, aggregate throughput 51.31 tok/s, wall time 19.96 s.
+
+**Status:** REJECTED. The ragged batch path adds more overhead than it removes in the current MLX runtime. The exact-offset batch path remains the better engine-level strategy for now.
+
+---
+
+## Experiment 13: Deadline-Based Decode Coalescing
+
+**Hypothesis:** Holding decode-ready requests for a very short deadline before their first token can increase exact-offset batch size enough to improve aggregate throughput.
+
+**Change:** Delay the first decode token after prefill by a small coalescing window, then release requests into the existing exact-offset batch scheduler.
+
+**Measured result on `Llama-3.1-8B-Instruct-4bit`:**
+- `3.0 ms` window: median TTFT `560.2 ms`, aggregate throughput `72.90 tok/s`.
+- `1.0 ms` window: median TTFT `558.6 ms`, aggregate throughput `80.88 tok/s`.
+- `0.5 ms` window: median TTFT `567.1 ms`, aggregate throughput `73.00 tok/s`.
+- Single-stream `compare_to_mlx_lm` stayed in the same band, but did not beat the exact-offset batch baseline.
+
+**Status:** REJECTED. The coalescing window improves TTFT modestly, but it does not beat the existing exact-offset batch path on aggregate throughput, which remains the primary performance metric.
 
 ---
 
