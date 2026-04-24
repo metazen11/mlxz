@@ -8,6 +8,7 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from mlxz.config import (
+    AttentionConfig,
     KVConfig,
     PagedConfig,
     PrefixCacheConfig,
@@ -49,6 +50,7 @@ class TestRuntimeConfigDefaults:
         assert isinstance(cfg.prefix_cache, PrefixCacheConfig)
         assert isinstance(cfg.speculative, SpeculativeConfig)
         assert isinstance(cfg.scheduler, SchedulerConfig)
+        assert isinstance(cfg.attention, AttentionConfig)
         assert isinstance(cfg.server, ServerConfig)
 
 
@@ -99,6 +101,12 @@ class TestSchedulerConfigDefaults:
         assert sc.max_concurrent_requests == 8
         assert sc.chunked_prefill_chunk_tokens == 128
         assert sc.admission_headroom == 0.10
+
+
+class TestAttentionConfigDefaults:
+    def test_defaults(self):
+        ac = AttentionConfig()
+        assert ac.memory_efficient_threshold is None
 
 
 class TestServerConfigDefaults:
@@ -352,6 +360,12 @@ class TestEnvVarOverrides:
         monkeypatch.setenv("MLXZ_SCHEDULER__MAX_CONCURRENT_REQUESTS", "32")
         cfg = RuntimeConfig()  # type: ignore[call-arg]
         assert cfg.scheduler.max_concurrent_requests == 32
+
+    def test_nested_attention_threshold_from_env(self, monkeypatch):
+        monkeypatch.setenv("MLXZ_MODEL", "test-model")
+        monkeypatch.setenv("MLXZ_ATTENTION__MEMORY_EFFICIENT_THRESHOLD", "128")
+        cfg = RuntimeConfig()  # type: ignore[call-arg]
+        assert cfg.attention.memory_efficient_threshold == 128
 
     def test_wired_limit_from_env(self, monkeypatch):
         monkeypatch.setenv("MLXZ_MODEL", "test-model")

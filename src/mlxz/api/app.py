@@ -85,12 +85,16 @@ def create_app(config: RuntimeConfig) -> FastAPI:
         from mlxz.telemetry.db import create_engine_from_config
         from mlxz.telemetry.recorder import TelemetryRecorder
         from mlxz.api.metrics import create_metrics_app
+        from mlxz.attention import patch_attention_memory_efficient_threshold
         import uvicorn
 
         # 1. Load model
         store = ModelStore()
         model, tokenizer, weight_bytes = store.load(config.model)
         _health_state.load_progress = 0.5
+        patch_attention_memory_efficient_threshold(
+            config.attention.memory_efficient_threshold
+        )
 
         # 2. Plan residency budget
         planner = ResidencyPlanner()

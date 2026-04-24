@@ -91,6 +91,12 @@ class SchedulerConfig(BaseModel):
     admission_headroom: float = Field(default=0.10, gt=0, le=0.5)
 
 
+class AttentionConfig(BaseModel):
+    """MLX attention kernel tuning knobs."""
+
+    memory_efficient_threshold: int | None = None
+
+
 class RequestLimits(BaseModel):
     """Hard caps enforced in Pydantic request schemas before tokenisation."""
 
@@ -150,6 +156,7 @@ class RuntimeConfig(BaseSettings):
     prefix_cache: PrefixCacheConfig = Field(default_factory=PrefixCacheConfig)
     speculative: SpeculativeConfig = Field(default_factory=SpeculativeConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    attention: AttentionConfig = Field(default_factory=AttentionConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
 
     @classmethod
