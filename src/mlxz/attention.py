@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from functools import wraps
-from typing import Any, Callable
+from typing import Any
 
 import mlx.core as mx
 
@@ -16,6 +16,9 @@ def patch_attention_memory_efficient_threshold(threshold: int | None) -> None:
     without passing the optional threshold. This hook lets the engine
     experiment with a global default at startup without forking model code.
     """
+    if threshold is None:
+        return
+
     global _PATCHED_THRESHOLD
     if threshold == _PATCHED_THRESHOLD:
         return
