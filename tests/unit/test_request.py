@@ -98,6 +98,11 @@ class TestRequestTransitions:
         with pytest.raises(ValueError):
             req.transition(RequestState.DECODING)
 
+    def test_same_state_is_noop(self):
+        req = self._make_request(RequestState.COMPLETED)
+        req.transition(RequestState.COMPLETED)
+        assert req.state == RequestState.COMPLETED
+
     def test_cancellation_from_any_active_state(self):
         for state in [RequestState.ADMITTED, RequestState.PREFILLING, RequestState.DECODING]:
             req = self._make_request(state)

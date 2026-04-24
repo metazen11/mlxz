@@ -15,6 +15,7 @@ from mlxz.engine.decode_compiler import (
     build_compiled_greedy_chunk,
     build_compiled_greedy_step,
 )
+from mlxz.engine.cache_quant import maybe_quantize_kv_cache
 from mlxz.engine.sampling import sample
 from mlxz.engine.thread_boundary import CancellationRegistry, MxEvalGuard, RequestBridge
 from mlxz.types import (
@@ -349,6 +350,12 @@ class SingleStreamEngine:
             step_kv = int(kv_per_token)
             kv_charged += step_kv
             self._kv_used_bytes += step_kv
+            maybe_quantize_kv_cache(
+                cache,
+                self._config.kv.quantized_kv_start,
+                self._config.kv.group_size,
+                self._config.kv.bits,
+            )
 
             # EOS token id
             eos_token_id = getattr(self._tokenizer, "eos_token_id", None)
@@ -429,6 +436,12 @@ class SingleStreamEngine:
                 # Update KV tracking
                 kv_charged += step_kv
                 self._kv_used_bytes += step_kv
+                maybe_quantize_kv_cache(
+                    cache,
+                    self._config.kv.quantized_kv_start,
+                    self._config.kv.group_size,
+                    self._config.kv.bits,
+                )
 
             # Set finish reason if not already set
             if request.state == RequestState.DECODING:
