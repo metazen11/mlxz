@@ -35,16 +35,18 @@ class TestPrefixCacheDisk:
         kv = _make_mock_kv_cache()
         cache.store_sync(hashes, kv, n_tokens=4)
 
-        n_matched, kv_states = cache.lookup_sync(hashes)
+        n_matched, kv_states, cache_type = cache.lookup_sync(hashes)
         assert n_matched == 4
         assert kv_states is not None
+        assert cache_type is not None
         assert len(kv_states) == 2  # 2 layers
 
     def test_miss_returns_zero_none(self, tmp_path):
         cache = PrefixCacheDisk(tmp_path, disk_budget_bytes=100_000_000, model_hash="test")
-        n, kv = cache.lookup_sync(_make_hashes(3))
+        n, kv, cache_type = cache.lookup_sync(_make_hashes(3))
         assert n == 0
         assert kv is None
+        assert cache_type is None
 
     def test_checksum_validation(self, tmp_path):
         cache = PrefixCacheDisk(tmp_path, disk_budget_bytes=100_000_000, model_hash="test")
@@ -59,9 +61,10 @@ class TestPrefixCacheDisk:
         meta_path.write_text(json.dumps(meta))
 
         # Lookup should detect corruption and return miss
-        n, kv = cache.lookup_sync(hashes)
+        n, kv, cache_type = cache.lookup_sync(hashes)
         assert n == 0
         assert kv is None
+        assert cache_type is None
         # Corrupt file should be removed
         assert not entry_path.exists()
 
@@ -70,8 +73,9 @@ class TestPrefixCacheDisk:
         cache = PrefixCacheDisk(Path("/nonexistent/path"), disk_budget_bytes=100_000_000, model_hash="test")
         # Should not crash
         cache.store_sync(_make_hashes(1), _make_mock_kv_cache(), n_tokens=4)
-        n, kv = cache.lookup_sync(_make_hashes(1))
+        n, kv, cache_type = cache.lookup_sync(_make_hashes(1))
         assert n == 0
+        assert cache_type is None
 
     def test_duplicate_store_is_noop(self, tmp_path):
         cache = PrefixCacheDisk(tmp_path, disk_budget_bytes=100_000_000, model_hash="test")
@@ -110,9 +114,9 @@ class TestPrefixCacheDisk:
         cache_a.store_sync(hashes, _make_mock_kv_cache(), n_tokens=4)
 
         # model_b should not find model_a's cache
-        n, _ = cache_b.lookup_sync(hashes)
+        n, _, _ = cache_b.lookup_sync(hashes)
         assert n == 0
 
         # model_a should find it
-        n, _ = cache_a.lookup_sync(hashes)
+        n, _, _ = cache_a.lookup_sync(hashes)
         assert n == 4

@@ -1,13 +1,9 @@
 """MLX attention kernel tuning hooks."""
 from __future__ import annotations
 
-from functools import wraps
-from typing import Any
+import structlog
 
-import mlx.core as mx
-
-_PATCHED_THRESHOLD: int | None = None
-
+logger = structlog.get_logger()
 
 def patch_attention_memory_efficient_threshold(threshold: int | None) -> None:
     """Force MLX SDPA to use a configured memory-efficient threshold.
@@ -19,36 +15,11 @@ def patch_attention_memory_efficient_threshold(threshold: int | None) -> None:
     if threshold is None:
         return
 
-    global _PATCHED_THRESHOLD
-    if threshold == _PATCHED_THRESHOLD:
-        return
-
-    original = mx.fast.scaled_dot_product_attention
-
-    @wraps(original)
-    def wrapped(
-        queries: Any,
-        keys: Any,
-        values: Any,
-        scale: float,
-        mask: Any | None = None,
-        memory_efficient_threshold: int | None = None,
-        s: Any = {},
-    ) -> Any:
-        effective_threshold = (
-            threshold
-            if memory_efficient_threshold is None
-            else memory_efficient_threshold
-        )
-        return original(
-            queries,
-            keys,
-            values,
-            scale,
-            mask=mask,
-            memory_efficient_threshold=effective_threshold,
-            s=s,
-        )
-
-    mx.fast.scaled_dot_product_attention = wrapped
-    _PATCHED_THRESHOLD = threshold
+    # MLX's fast SDPA primitive does not expose a memory_efficient_threshold
+    # parameter in this runtime. Keep the hook as a no-op so config wiring
+    # remains stable, but do not patch the kernel call.
+    logger.warning(
+        "attention_threshold_unsupported",
+        threshold=threshold,
+        kernel="mx.fast.scaled_dot_product_attention",
+    )

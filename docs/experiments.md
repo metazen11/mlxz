@@ -199,6 +199,20 @@ def _compiled_decode_step(model, token_id, cache):
 
 ---
 
+## Experiment 12: Quantized KV Cache Start
+
+**Hypothesis:** Starting long-context requests on `QuantizedKVCache` once the prompt crosses `quantized_kv_start` would reduce cache-bandwidth pressure on the decode hot path without changing sampling semantics.
+
+**Change:** Wired `RuntimeConfig.kv.quantized_kv_start` into cache construction so long prompts start on the quantized cache path from the beginning, and tagged prefix-cache entries by cache type so short and long cache states do not mix.
+
+**Measured result on 1024-token prompts with `max_tokens=128`:**
+- `Llama-3.1-8B-Instruct-4bit`: `mlxz` 65.8 tok/s vs `mlx-lm` 37.8 tok/s, with total latency 4104 ms vs 4894 ms.
+- `Llama-3.2-3B-Instruct-4bit`: `mlxz` 64.0 tok/s vs `mlx-lm` 76.8 tok/s, with total latency 3218 ms vs 2807 ms.
+
+**Status:** PARTIAL WIN. This is a real model-agnostic gain on the longer 8B context, but it does not generalize to the 3B run. Keep the wiring, keep measuring 14B, and treat this as a workload-dependent optimization rather than a universal throughput win.
+
+---
+
 ## Key Insights
 
 1. **Metal compute is NOT the bottleneck.** Both mlxz and mlx-lm use the same MLX Metal kernels. The gap is entirely in Python dispatch overhead.

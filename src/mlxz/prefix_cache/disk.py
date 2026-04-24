@@ -52,7 +52,11 @@ class PrefixCacheDisk:
 
     # -- Sync interface --
 
-    def lookup_sync(self, token_hashes: tuple[bytes, ...]) -> tuple[int, list[Any] | None]:
+    def lookup_sync(
+        self,
+        token_hashes: tuple[bytes, ...],
+        cache_type: str | None = None,
+    ) -> tuple[int, list[Any] | None, str | None]:
         """Check disk for longest matching prefix."""
         for length in range(len(token_hashes), 0, -1):
             prefix_key = token_hashes[:length]
@@ -60,13 +64,17 @@ class PrefixCacheDisk:
             meta_path = self._meta_path(entry_path)
             if entry_path.exists() and meta_path.exists():
                 try:
-                    kv_states, n_tokens = self._load_entry(entry_path, meta_path)
+                    kv_states, n_tokens, meta_cache_type = self._load_entry(
+                        entry_path, meta_path
+                    )
+                    if cache_type is not None and meta_cache_type != cache_type:
+                        continue
                     entry_path.touch()  # update mtime for LRU
                     meta_path.touch()
                     self._stats.hits += 1
                     self._stats.hit_bytes += entry_path.stat().st_size
                     logger.debug("prefix_cache_disk_hit", matched_tokens=n_tokens)
-                    return n_tokens, kv_states
+                    return n_tokens, kv_states, meta_cache_type
                 except (PrefixCacheCorruption, OSError, Exception) as e:
                     logger.warning("prefix_cache_disk_load_failed",
                                    path=str(entry_path), error=str(e))
@@ -74,7 +82,7 @@ class PrefixCacheDisk:
                     entry_path.unlink(missing_ok=True)
                     meta_path.unlink(missing_ok=True)
         self._stats.misses += 1
-        return 0, None
+        return 0, None, None
 
     def store_sync(
         self,
@@ -143,7 +151,9 @@ class PrefixCacheDisk:
         except (OSError, RuntimeError) as e:
             logger.warning("prefix_cache_disk_store_failed", error=str(e))
 
-    def _load_entry(self, entry_path: Path, meta_path: Path) -> tuple[list[Any], int]:
+    def _load_entry(
+        self, entry_path: Path, meta_path: Path
+    ) -> tuple[list[Any], int, str | None]:
         """Load and validate a cached prefix entry."""
         meta = json.loads(meta_path.read_text())
 
@@ -170,7 +180,7 @@ class PrefixCacheDisk:
                 layer_tensors = {k: v for k, v in tensors.items() if k.startswith(f"l{layer_idx}_")}
                 kv_states.append(tuple(layer_tensors.values()))
 
-        return kv_states, int(meta["n_tokens"])
+        return kv_states, int(meta["n_tokens"]), meta.get("cache_type")
 
     def _evict_until_room(self, needed_bytes: int) -> None:
         """Evict oldest entries by mtime until budget allows needed_bytes."""
@@ -190,7 +200,9 @@ class PrefixCacheDisk:
 
     # -- Async interface --
 
-    async def lookup(self, token_hashes: list[bytes]) -> tuple[int, Any | None]:
+    async def lookup(
+        self, token_hashes: list[bytes]
+    ) -> tuple[int, Any | None, str | None]:
         return self.lookup_sync(tuple(token_hashes))
 
     async def store(self, token_hashes: list[bytes], kv: Any) -> None:
