@@ -227,6 +227,8 @@ def _compiled_decode_step(model, token_id, cache):
 
 **Hypothesis:** A fixed quantized-cache start point is too coarse. Long prompts want quantization from the start, while short prompts are harmed by it, so the policy should likely depend on request length or total requested sequence length.
 
+**Change:** Use total requested length (`prompt_token_count + max_tokens`) to decide whether to start on `QuantizedKVCache`, instead of looking only at prompt length.
+
 **Measured result on long prompts (`prompt~1024`, `max_tokens=128`):**
 - `Llama-3.1-8B-Instruct-4bit`: `kv_start=0` was better than `256` (`70.0 tok/s` vs `59.8 tok/s`).
 - `Llama-3.2-3B-Instruct-4bit`: `kv_start=0` was better than `256` (`125.0 tok/s` vs `114.7 tok/s`).
@@ -235,7 +237,7 @@ def _compiled_decode_step(model, token_id, cache):
 **Measured result on a short prompt (`prompt~64`, `max_tokens=128`, 8B):**
 - `kv_start=0` improved over `kv_start=256` on the same harness (`37.6 tok/s` vs `27.7 tok/s`), but the short-prompt path still lost to `mlx-lm` (`59.1 tok/s`).
 
-**Status:** OPEN. The sweep shows that a fixed threshold is still not the right final policy. The next experiment should make quantized-cache activation adaptive to request length or total requested tokens so we can keep the long-context win while also protecting the short-prompt path.
+**Status:** IMPLEMENTED AS A BETTER DEFAULT, BUT STILL NOT A UNIVERSAL WIN. The engine now uses total requested length to avoid the worst short-prompt penalty, while keeping the long-context gains. The remaining question is whether this should stay as a fixed threshold, become model-specific, or evolve into a more dynamic policy.
 
 ---
 

@@ -170,7 +170,8 @@ class SpeculativeEngine:
             # Create KV caches for both models
             quantize_kv = (
                 self._config.kv.quantized_kv_start > 0
-                and len(request.prompt_tokens) >= self._config.kv.quantized_kv_start
+                and (request.prompt_token_count + request.max_tokens)
+                >= self._config.kv.quantized_kv_start
                 and self._config.kv.bits < 16
             )
             target_cache = build_prompt_cache(
