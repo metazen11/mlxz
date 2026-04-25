@@ -223,6 +223,22 @@ def _compiled_decode_step(model, token_id, cache):
 
 ---
 
+## Experiment 13: Adaptive Quantized KV Policy Sweep
+
+**Hypothesis:** A fixed quantized-cache start point is too coarse. Long prompts want quantization from the start, while short prompts are harmed by it, so the policy should likely depend on request length or total requested sequence length.
+
+**Measured result on long prompts (`prompt~1024`, `max_tokens=128`):**
+- `Llama-3.1-8B-Instruct-4bit`: `kv_start=0` was better than `256` (`70.0 tok/s` vs `59.8 tok/s`).
+- `Llama-3.2-3B-Instruct-4bit`: `kv_start=0` was better than `256` (`125.0 tok/s` vs `114.7 tok/s`).
+- `Qwen2.5-14B-Instruct-4bit`: `kv_start=0` was better than `256` (`37.3 tok/s` vs `32.4 tok/s`), but still slower than `mlx-lm` on that model (`22.8 tok/s` vs `36.1 tok/s` when compared directly).
+
+**Measured result on a short prompt (`prompt~64`, `max_tokens=128`, 8B):**
+- `kv_start=0` improved over `kv_start=256` on the same harness (`37.6 tok/s` vs `27.7 tok/s`), but the short-prompt path still lost to `mlx-lm` (`59.1 tok/s`).
+
+**Status:** OPEN. The sweep shows that a fixed threshold is still not the right final policy. The next experiment should make quantized-cache activation adaptive to request length or total requested tokens so we can keep the long-context win while also protecting the short-prompt path.
+
+---
+
 ## Key Insights
 
 1. **Metal compute is NOT the bottleneck.** Both mlxz and mlx-lm use the same MLX Metal kernels. The gap is entirely in Python dispatch overhead.
