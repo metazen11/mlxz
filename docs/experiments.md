@@ -25,6 +25,16 @@ Bench harness notes:
 
 **Current repeated-prefix checkpoint:** After storing chunk-boundary prefix states instead of only full prompts, the sequential agent-style workload on the 8B model improved to a median TTFT of 71.4 ms, compared with 104.1 ms for `mlx-lm`. Decode throughput is still slightly behind (`71.86 tok/s` vs `76.97 tok/s`), so the engine is not a blanket throughput win yet, but the prefix-cache story is now real instead of theoretical.
 
+## Open Experiment Issues
+
+The ideas we still want to try are tracked in GitHub so they do not get lost:
+
+- [#11 MLX cache mutation hot path](https://github.com/metazen11/mlxz/issues/11)
+- [#12 true multi-request packed forward pass](https://github.com/metazen11/mlxz/issues/12)
+- [#13 custom Metal attention kernel for paged blocks](https://github.com/metazen11/mlxz/issues/13)
+- [#14 smarter prefix cache reuse for sub-256-token prompts](https://github.com/metazen11/mlxz/issues/14)
+- [#15 quantized KV cache start for long prompts](https://github.com/metazen11/mlxz/issues/15)
+
 ## What Still Needs To Happen
 
 - Compile or shape-bucket the stable hot paths only if they survive a multi-model test matrix.
