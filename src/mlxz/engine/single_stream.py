@@ -10,6 +10,7 @@ import mlx.nn as nn
 import structlog
 
 from mlxz.config import RuntimeConfig
+from mlxz.engine.cache_utils import build_prompt_cache, cache_type_name
 from mlxz.engine.request import Request, Token
 from mlxz.engine.decode_compiler import (
     build_compiled_greedy_chunk,
@@ -175,9 +176,18 @@ class SingleStreamEngine:
             self._running_requests += 1
 
             # Create KV cache for this request
-            from mlx_lm.models.cache import make_prompt_cache
-
-            cache = make_prompt_cache(self._model)
+            quantize_kv = (
+                self._config.kv.quantized_kv_start > 0
+                and (request.prompt_token_count + request.max_tokens)
+                >= self._config.kv.quantized_kv_start
+                and self._config.kv.bits < 16
+            )
+            cache = build_prompt_cache(
+                self._model,
+                quantized=quantize_kv,
+                group_size=self._config.kv.group_size,
+                bits=self._config.kv.bits,
+            )
 
             # --- Prefix cache lookup ---
             n_prefix_tokens = 0
@@ -189,20 +199,40 @@ class SingleStreamEngine:
 
                 # Try memory cache first
                 if self._prefix_cache_memory is not None:
-                    n_matched, cached_kv = self._prefix_cache_memory.lookup_sync(token_hashes)
+                    n_matched, cached_kv, cached_type = self._prefix_cache_memory.lookup_sync(
+                        token_hashes,
+                        cache_type=cache_type_name(cache),
+                    )
                     if cached_kv is not None and n_matched > 0:
                         n_prefix_tokens = n_matched
                         cache_tier = "memory"
+                        if cached_type == "QuantizedKVCache" and cache_type_name(cache) != "QuantizedKVCache":
+                            cache = build_prompt_cache(
+                                self._model,
+                                quantized=True,
+                                group_size=self._config.kv.group_size,
+                                bits=self._config.kv.bits,
+                            )
                         # Restore cached KV into the fresh cache
                         for layer_cache, cached_state in zip(cache, cached_kv):
                             layer_cache.state = cached_state
 
                 # Fall back to disk cache
                 if n_prefix_tokens == 0 and self._prefix_cache_disk is not None:
-                    n_matched, cached_kv = self._prefix_cache_disk.lookup_sync(token_hashes)
+                    n_matched, cached_kv, cached_type = self._prefix_cache_disk.lookup_sync(
+                        token_hashes,
+                        cache_type=cache_type_name(cache),
+                    )
                     if cached_kv is not None and n_matched > 0:
                         n_prefix_tokens = n_matched
                         cache_tier = "disk"
+                        if cached_type == "QuantizedKVCache" and cache_type_name(cache) != "QuantizedKVCache":
+                            cache = build_prompt_cache(
+                                self._model,
+                                quantized=True,
+                                group_size=self._config.kv.group_size,
+                                bits=self._config.kv.bits,
+                            )
                         # Restore cached KV into the fresh cache
                         for layer_cache, cached_state in zip(cache, cached_kv):
                             layer_cache.state = cached_state

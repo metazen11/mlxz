@@ -52,7 +52,11 @@ class PrefixCacheDisk:
 
     # -- Sync interface --
 
-    def lookup_sync(self, token_hashes: tuple[bytes, ...]) -> tuple[int, list[Any] | None]:
+    def lookup_sync(
+        self,
+        token_hashes: tuple[bytes, ...],
+        cache_type: str | None = None,
+    ) -> tuple[int, list[Any] | None, str | None]:
         """Check disk for longest matching prefix."""
         for length in range(len(token_hashes), 0, -1):
             prefix_key = token_hashes[:length]
@@ -60,13 +64,16 @@ class PrefixCacheDisk:
             meta_path = self._meta_path(entry_path)
             if entry_path.exists() and meta_path.exists():
                 try:
+                    meta = json.loads(meta_path.read_text())
+                    if cache_type is not None and str(meta.get("cache_type", "KVCache")) != cache_type:
+                        continue
                     kv_states, n_tokens = self._load_entry(entry_path, meta_path)
                     entry_path.touch()  # update mtime for LRU
                     meta_path.touch()
                     self._stats.hits += 1
                     self._stats.hit_bytes += entry_path.stat().st_size
                     logger.debug("prefix_cache_disk_hit", matched_tokens=n_tokens)
-                    return n_tokens, kv_states
+                    return n_tokens, kv_states, str(meta.get("cache_type", "KVCache"))
                 except (PrefixCacheCorruption, OSError, Exception) as e:
                     logger.warning("prefix_cache_disk_load_failed",
                                    path=str(entry_path), error=str(e))
@@ -74,7 +81,7 @@ class PrefixCacheDisk:
                     entry_path.unlink(missing_ok=True)
                     meta_path.unlink(missing_ok=True)
         self._stats.misses += 1
-        return 0, None
+        return 0, None, None
 
     def store_sync(
         self,
@@ -190,7 +197,7 @@ class PrefixCacheDisk:
 
     # -- Async interface --
 
-    async def lookup(self, token_hashes: list[bytes]) -> tuple[int, Any | None]:
+    async def lookup(self, token_hashes: list[bytes]) -> tuple[int, Any | None, str | None]:
         return self.lookup_sync(tuple(token_hashes))
 
     async def store(self, token_hashes: list[bytes], kv: Any) -> None:
