@@ -56,6 +56,7 @@ Current entry:
 - `mx.async_eval()` prefetch in the shared engine/cache path: crashed on generations over 64 tokens because cache state became inconsistent across streams.
 - `mx.compile()` on the decode step: safe, but only a small win. On the current matrix it improved 8B by about 1.6%, 3B by about 0.3%, and 14B by about 1.4%. Not enough to close the mlx-lm gap by itself.
 - Speculative decoding with a 3B draft model on the 8B target: started after wiring `set_prefix_cache()` into the engine, but the current implementation was slower than plain single-stream decoding and worse than `mlx-lm` on the same benchmark. Keep it out of the default path until the draft-target cache reuse story is stronger.
+- KV cache growth-step sweep (`256` vs `1024` on the 8B long-prompt server benchmark): no material win. `mlxz` stayed behind `mlx-lm` on the 1024-token prompt/128-token generation run in both configurations, so the knob is not worth carrying forward as a default optimization.
 
 ---
 
