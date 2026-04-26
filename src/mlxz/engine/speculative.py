@@ -11,6 +11,7 @@ import mlx.nn as nn
 import structlog
 
 from mlxz.config import RuntimeConfig
+from mlxz.engine.cache_utils import build_prompt_cache, cache_type_name
 from mlxz.engine.draft import DraftModel
 from mlxz.engine.request import Request, Token
 from mlxz.engine.sampling import sample
@@ -167,10 +168,24 @@ class SpeculativeEngine:
             self._running_requests += 1
 
             # Create KV caches for both models
-            from mlx_lm.models.cache import make_prompt_cache
-
-            target_cache = make_prompt_cache(self._target_model)
-            draft_cache = make_prompt_cache(self._draft._model)
+            quantize_kv = (
+                self._config.kv.quantized_kv_start > 0
+                and (request.prompt_token_count + request.max_tokens)
+                >= self._config.kv.quantized_kv_start
+                and self._config.kv.bits < 16
+            )
+            target_cache = build_prompt_cache(
+                self._target_model,
+                quantized=quantize_kv,
+                group_size=self._config.kv.group_size,
+                bits=self._config.kv.bits,
+            )
+            draft_cache = build_prompt_cache(
+                self._draft._model,
+                quantized=quantize_kv,
+                group_size=self._config.kv.group_size,
+                bits=self._config.kv.bits,
+            )
 
             # Prefix cache lookup applies to the target model only. The draft
             # model has different weights, so its KV cache cannot be reused.
@@ -182,22 +197,38 @@ class SpeculativeEngine:
                 token_hashes = self._prefix_hasher.hash_chunks(request.prompt_tokens)
 
                 if self._prefix_cache_memory is not None:
-                    n_matched, cached_kv = self._prefix_cache_memory.lookup_sync(
-                        token_hashes
+                    n_matched, cached_kv, cached_type = self._prefix_cache_memory.lookup_sync(
+                        token_hashes,
+                        cache_type=cache_type_name(target_cache),
                     )
                     if cached_kv is not None and n_matched > 0:
                         n_prefix_tokens = n_matched
                         cache_tier = "memory"
+                        if cached_type == "QuantizedKVCache" and cache_type_name(target_cache) != "QuantizedKVCache":
+                            target_cache = build_prompt_cache(
+                                self._target_model,
+                                quantized=True,
+                                group_size=self._config.kv.group_size,
+                                bits=self._config.kv.bits,
+                            )
                         for layer_cache, cached_state in zip(target_cache, cached_kv):
                             layer_cache.state = cached_state
 
                 if n_prefix_tokens == 0 and self._prefix_cache_disk is not None:
-                    n_matched, cached_kv = self._prefix_cache_disk.lookup_sync(
-                        token_hashes
+                    n_matched, cached_kv, cached_type = self._prefix_cache_disk.lookup_sync(
+                        token_hashes,
+                        cache_type=cache_type_name(target_cache),
                     )
                     if cached_kv is not None and n_matched > 0:
                         n_prefix_tokens = n_matched
                         cache_tier = "disk"
+                        if cached_type == "QuantizedKVCache" and cache_type_name(target_cache) != "QuantizedKVCache":
+                            target_cache = build_prompt_cache(
+                                self._target_model,
+                                quantized=True,
+                                group_size=self._config.kv.group_size,
+                                bits=self._config.kv.bits,
+                            )
                         for layer_cache, cached_state in zip(target_cache, cached_kv):
                             layer_cache.state = cached_state
 

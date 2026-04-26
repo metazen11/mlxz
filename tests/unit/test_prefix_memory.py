@@ -38,15 +38,17 @@ class TestPrefixCacheMemory:
         kv = _make_mock_kv_cache()
         cache.store_sync(hashes, kv)
 
-        n_matched, kv_states = cache.lookup_sync(hashes)
+        n_matched, kv_states, cache_type = cache.lookup_sync(hashes)
         assert n_matched > 0
         assert kv_states is not None
+        assert cache_type == "MockKVCache"
 
     def test_miss_returns_zero_none(self):
         cache = PrefixCacheMemory(memory_budget_bytes=10_000_000)
-        n_matched, kv_states = cache.lookup_sync(_make_hashes(3))
+        n_matched, kv_states, cache_type = cache.lookup_sync(_make_hashes(3))
         assert n_matched == 0
         assert kv_states is None
+        assert cache_type is None
 
     def test_longest_prefix_matching(self):
         cache = PrefixCacheMemory(memory_budget_bytes=10_000_000)
@@ -58,9 +60,10 @@ class TestPrefixCacheMemory:
         extra = tuple(bytes([i + 10] * 32) for i in range(2))
         long_hashes = short_hashes + extra
 
-        n_matched, kv_states = cache.lookup_sync(long_hashes)
+        n_matched, kv_states, cache_type = cache.lookup_sync(long_hashes)
         assert n_matched > 0  # found the 2-chunk prefix
         assert kv_states is not None
+        assert cache_type == "MockKVCache"
 
     def test_shared_prefix_boundary_is_cached(self):
         """Long prompts should cache intermediate chunk-boundary prefixes."""
@@ -70,9 +73,10 @@ class TestPrefixCacheMemory:
         cache.store_sync(full_hashes, kv, block_size=2)
 
         prefix_hashes = full_hashes[:2]
-        n_matched, kv_states = cache.lookup_sync(prefix_hashes)
+        n_matched, kv_states, cache_type = cache.lookup_sync(prefix_hashes)
         assert n_matched == 4
         assert kv_states is not None
+        assert cache_type == "MockKVCache"
 
     def test_lru_eviction(self):
         # Budget fits ~1 entry
@@ -92,11 +96,13 @@ class TestPrefixCacheMemory:
         cache.store_sync(h2, _make_mock_kv_cache())
 
         # h1 should have been evicted (LRU)
-        n, _ = cache.lookup_sync(h1)
+        n, _, cache_type = cache.lookup_sync(h1)
         assert n == 0
+        assert cache_type is None
         # h2 should still exist
-        n, _ = cache.lookup_sync(h2)
+        n, _, cache_type = cache.lookup_sync(h2)
         assert n > 0
+        assert cache_type == "MockKVCache"
 
     def test_stats_tracking(self):
         cache = PrefixCacheMemory(memory_budget_bytes=10_000_000)
@@ -126,10 +132,11 @@ class TestPrefixCacheMemory:
         kv[0]._keys = mx.ones_like(kv[0]._keys) * 999
 
         # Cached version should be unchanged
-        _, cached = cache.lookup_sync(hashes)
+        _, cached, cache_type = cache.lookup_sync(hashes)
         assert cached is not None
         # Original was zeros, should still be zeros in cache
         assert mx.allclose(cached[0][0], mx.zeros((1, 1, 2, 4))).item()
+        assert cache_type == "MockKVCache"
 
     def test_duplicate_store_is_noop(self):
         cache = PrefixCacheMemory(memory_budget_bytes=10_000_000)

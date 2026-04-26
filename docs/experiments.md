@@ -25,6 +25,16 @@ Bench harness notes:
 
 **Current repeated-prefix checkpoint:** After storing chunk-boundary prefix states instead of only full prompts, the sequential agent-style workload on the 8B model improved to a median TTFT of 71.4 ms, compared with 104.1 ms for `mlx-lm`. Decode throughput is still slightly behind (`71.86 tok/s` vs `76.97 tok/s`), so the engine is not a blanket throughput win yet, but the prefix-cache story is now real instead of theoretical.
 
+## Open Experiment Issues
+
+The ideas we still want to try are tracked in GitHub so they do not get lost:
+
+- [#11 MLX cache mutation hot path](https://github.com/metazen11/mlxz/issues/11)
+- [#12 true multi-request packed forward pass](https://github.com/metazen11/mlxz/issues/12)
+- [#13 custom Metal attention kernel for paged blocks](https://github.com/metazen11/mlxz/issues/13)
+- [#14 smarter prefix cache reuse for sub-256-token prompts](https://github.com/metazen11/mlxz/issues/14)
+- [#15 quantized KV cache start for long prompts](https://github.com/metazen11/mlxz/issues/15)
+
 ## What Still Needs To Happen
 
 - Compile or shape-bucket the stable hot paths only if they survive a multi-model test matrix.
@@ -196,6 +206,38 @@ def _compiled_decode_step(model, token_id, cache):
 - Agent workload, 8 concurrent requests, improved to median TTFT 597.1 ms, p95 TTFT 1001.9 ms, median decode throughput 11.00 tok/s, aggregate throughput 83.28 tok/s, wall time 12.30 s.
 
 **Status:** PROMISING. This is the first Python-level batching change that materially improved the concurrent agent workload. The remaining question is how much more benefit we can get by widening the compatibility rule or moving the same idea into MLX itself.
+
+---
+
+## Experiment 12: Quantized KV Cache Start
+
+**Hypothesis:** Starting long-context requests on `QuantizedKVCache` once the prompt crosses `quantized_kv_start` would reduce cache-bandwidth pressure on the decode hot path without changing sampling semantics.
+
+**Change:** Wired `RuntimeConfig.kv.quantized_kv_start` into cache construction so long prompts start on the quantized cache path from the beginning, and tagged prefix-cache entries by cache type so short and long cache states do not mix.
+
+**Measured result on 1024-token prompts with `max_tokens=128`:**
+- `Llama-3.1-8B-Instruct-4bit`: `mlxz` 65.8 tok/s vs `mlx-lm` 37.8 tok/s, with total latency 4104 ms vs 4894 ms.
+- `Llama-3.2-3B-Instruct-4bit`: `mlxz` 64.0 tok/s vs `mlx-lm` 76.8 tok/s, with total latency 3218 ms vs 2807 ms.
+
+**Status:** PARTIAL WIN. This is a real model-agnostic gain on the longer 8B context, but it does not generalize to the 3B run. Keep the wiring, keep measuring 14B, and treat this as a workload-dependent optimization rather than a universal throughput win.
+
+---
+
+## Experiment 13: Adaptive Quantized KV Policy Sweep
+
+**Hypothesis:** A fixed quantized-cache start point is too coarse. Long prompts want quantization from the start, while short prompts are harmed by it, so the policy should likely depend on request length or total requested sequence length.
+
+**Change:** Use total requested length (`prompt_token_count + max_tokens`) to decide whether to start on `QuantizedKVCache`, instead of looking only at prompt length.
+
+**Measured result on long prompts (`prompt~1024`, `max_tokens=128`):**
+- `Llama-3.1-8B-Instruct-4bit`: `kv_start=0` was better than `256` (`70.0 tok/s` vs `59.8 tok/s`).
+- `Llama-3.2-3B-Instruct-4bit`: `kv_start=0` was better than `256` (`125.0 tok/s` vs `114.7 tok/s`).
+- `Qwen2.5-14B-Instruct-4bit`: `kv_start=0` was better than `256` (`37.3 tok/s` vs `32.4 tok/s`), but still slower than `mlx-lm` on that model (`22.8 tok/s` vs `36.1 tok/s` when compared directly).
+
+**Measured result on a short prompt (`prompt~64`, `max_tokens=128`, 8B):**
+- `kv_start=0` improved over `kv_start=256` on the same harness (`37.6 tok/s` vs `27.7 tok/s`), but the short-prompt path still lost to `mlx-lm` (`59.1 tok/s`).
+
+**Status:** IMPLEMENTED AS A BETTER DEFAULT, BUT STILL NOT A UNIVERSAL WIN. The engine now uses total requested length to avoid the worst short-prompt penalty, while keeping the long-context gains. The remaining question is whether this should stay as a fixed threshold, become model-specific, or evolve into a more dynamic policy.
 
 ---
 

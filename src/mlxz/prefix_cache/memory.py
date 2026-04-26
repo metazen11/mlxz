@@ -49,7 +49,11 @@ class PrefixCacheMemory:
 
     # -- Sync interface (used by engine thread) --
 
-    def lookup_sync(self, token_hashes: tuple[bytes, ...]) -> tuple[int, list[Any] | None]:
+    def lookup_sync(
+        self,
+        token_hashes: tuple[bytes, ...],
+        cache_type: str | None = None,
+    ) -> tuple[int, list[Any] | None, str | None]:
         """Find the longest matching prefix.
 
         Tries progressively shorter prefixes: (all N) -> (N-1) -> ... -> (1).
@@ -62,15 +66,17 @@ class PrefixCacheMemory:
             prefix_key = token_hashes[:length]
             if prefix_key in self._entries:
                 entry = self._entries[prefix_key]
+                if cache_type is not None and entry.cache_type != cache_type:
+                    continue
                 entry.last_access = time.monotonic()
                 self._stats.hits += 1
                 self._stats.hit_bytes += entry.size_bytes
                 logger.debug("prefix_cache_memory_hit",
                              matched_chunks=length,
                              matched_tokens=entry.n_tokens)
-                return entry.n_tokens, entry.kv_states
+                return entry.n_tokens, entry.kv_states, entry.cache_type
         self._stats.misses += 1
-        return 0, None
+        return 0, None, None
 
     def store_sync(
         self,
@@ -180,7 +186,7 @@ class PrefixCacheMemory:
 
     # -- Async interface (satisfies PrefixCacheProtocol) --
 
-    async def lookup(self, token_hashes: list[bytes]) -> tuple[int, Any | None]:
+    async def lookup(self, token_hashes: list[bytes]) -> tuple[int, Any | None, str | None]:
         return self.lookup_sync(tuple(token_hashes))
 
     async def store(self, token_hashes: list[bytes], kv: Any) -> None:
