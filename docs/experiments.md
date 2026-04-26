@@ -220,6 +220,8 @@ def _compiled_decode_step(model, token_id, cache):
 - `Llama-3.1-8B-Instruct-4bit`: `mlxz` 65.8 tok/s vs `mlx-lm` 37.8 tok/s, with total latency 4104 ms vs 4894 ms.
 - `Llama-3.2-3B-Instruct-4bit`: `mlxz` 64.0 tok/s vs `mlx-lm` 76.8 tok/s, with total latency 3218 ms vs 2807 ms.
 
+**Implementation note:** The local `QuantizedKVCache` wrapper now restores `offset` when prefix-cache state is assigned. Upstream `mlx_lm` preserves the quantized buffers but leaves `offset` stale, which would make restored caches inconsistent after a prefix hit.
+
 **Status:** PARTIAL WIN. This is a real model-agnostic gain on the longer 8B context, but it does not generalize to the 3B run. Keep the wiring, keep measuring 14B, and treat this as a workload-dependent optimization rather than a universal throughput win.
 
 ---

@@ -3,7 +3,23 @@ from __future__ import annotations
 
 from typing import Any
 
-from mlx_lm.models.cache import KVCache, QuantizedKVCache, RotatingKVCache
+from mlx_lm.models.cache import (
+    KVCache,
+    QuantizedKVCache as MLXQuantizedKVCache,
+    RotatingKVCache,
+)
+
+
+class QuantizedKVCache(MLXQuantizedKVCache):
+    """Quantized cache wrapper that restores the offset alongside cache state."""
+
+    @MLXQuantizedKVCache.state.setter
+    def state(self, v: Any) -> None:
+        self.keys, self.values = v
+        if self.keys is None:
+            self.offset = 0
+        else:
+            self.offset = self.keys[0].shape[2]
 
 
 def cache_type_name(cache: list[Any]) -> str:
