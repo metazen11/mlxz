@@ -226,7 +226,11 @@ def _compiled_decode_step(model, token_id, cache):
 - `mlxz`: `62.0 tok/s`, TTFT `129.4 ms`, total `2195.1 ms`
 - `mlx-lm`: `32.2 tok/s`, total `7027.0 ms`
 
-**Status:** PARTIAL WIN. This is a real win on the longer 8B context, but it does not generalize to the 3B run. Keep the wiring, keep measuring 14B, and treat this as a workload-dependent optimization rather than a universal throughput win.
+**Additional follow-up on `Qwen2.5-14B-Instruct-4bit`, prompt~1222, max_tokens=128, 3 runs:**
+- `mlxz`: `18.4 tok/s`, TTFT `590.6 ms`, total `7550.4 ms`
+- `mlx-lm`: `17.5 tok/s`, total `11160.2 ms`
+
+**Status:** PARTIAL WIN. This is a real win on the longer 8B and 14B contexts, but it does not generalize to the 3B run. Keep the wiring, keep measuring 3B/14B, and treat this as a workload-dependent optimization rather than a universal throughput win.
 
 ---
 
