@@ -222,7 +222,11 @@ def _compiled_decode_step(model, token_id, cache):
 
 **Implementation note:** The local `QuantizedKVCache` wrapper now restores `offset` when prefix-cache state is assigned. Upstream `mlx_lm` preserves the quantized buffers but leaves `offset` stale, which would make restored caches inconsistent after a prefix hit.
 
-**Status:** PARTIAL WIN. This is a real model-agnostic gain on the longer 8B context, but it does not generalize to the 3B run. Keep the wiring, keep measuring 14B, and treat this as a workload-dependent optimization rather than a universal throughput win.
+**Follow-up benchmark on the current branch (`Llama-3.1-8B-Instruct-4bit`, prompt~1228, max_tokens=128, 3 runs):**
+- `mlxz`: `62.0 tok/s`, TTFT `129.4 ms`, total `2195.1 ms`
+- `mlx-lm`: `32.2 tok/s`, total `7027.0 ms`
+
+**Status:** PARTIAL WIN. This is a real win on the longer 8B context, but it does not generalize to the 3B run. Keep the wiring, keep measuring 14B, and treat this as a workload-dependent optimization rather than a universal throughput win.
 
 ---
 
