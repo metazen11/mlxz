@@ -230,6 +230,10 @@ def _compiled_decode_step(model, token_id, cache):
 - `mlxz`: `18.4 tok/s`, TTFT `590.6 ms`, total `7550.4 ms`
 - `mlx-lm`: `17.5 tok/s`, total `11160.2 ms`
 
+**Counterexample on `Llama-3.2-3B-Instruct-4bit`, prompt~1228, max_tokens=128, 3 runs:**
+- `mlxz`: `54.8 tok/s`, TTFT `88.1 ms`, total `2424.7 ms`
+- `mlx-lm`: `67.9 tok/s`, total `2899.6 ms`
+
 **Status:** PARTIAL WIN. This is a real win on the longer 8B and 14B contexts, but it does not generalize to the 3B run. Keep the wiring, keep measuring 3B/14B, and treat this as a workload-dependent optimization rather than a universal throughput win.
 
 ---
