@@ -8,11 +8,11 @@ imports.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import IntEnum, Enum
+from enum import Enum, IntEnum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    import asyncio
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -172,9 +172,7 @@ class EngineProtocol(Protocol):
 class PrefixCacheProtocol(Protocol):
     """Content-addressed prefix cache interface."""
 
-    async def lookup(
-        self, token_hashes: list[bytes]
-    ) -> tuple[int, Any | None]:
+    async def lookup(self, token_hashes: list[bytes]) -> tuple[int, Any | None]:
         """Return ``(n_matched_chunks, cached_kv_reference_or_none)``."""
         ...
 

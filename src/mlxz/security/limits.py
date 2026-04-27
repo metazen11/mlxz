@@ -11,8 +11,6 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from mlxz.config import RequestLimits
-
 __all__ = ["ContentSizeLimitMiddleware"]
 
 

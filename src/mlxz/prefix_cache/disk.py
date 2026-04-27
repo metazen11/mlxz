@@ -1,9 +1,9 @@
 """Disk-tier prefix cache with safetensors serialization and SHA-256 integrity."""
+
 from __future__ import annotations
 
 import hashlib
 import json
-import time
 from pathlib import Path
 from typing import Any
 
@@ -65,7 +65,10 @@ class PrefixCacheDisk:
             if entry_path.exists() and meta_path.exists():
                 try:
                     meta = json.loads(meta_path.read_text())
-                    if cache_type is not None and str(meta.get("cache_type", "KVCache")) != cache_type:
+                    if (
+                        cache_type is not None
+                        and str(meta.get("cache_type", "KVCache")) != cache_type
+                    ):
                         continue
                     kv_states, n_tokens = self._load_entry(entry_path, meta_path)
                     entry_path.touch()  # update mtime for LRU
@@ -75,8 +78,9 @@ class PrefixCacheDisk:
                     logger.debug("prefix_cache_disk_hit", matched_tokens=n_tokens)
                     return n_tokens, kv_states, str(meta.get("cache_type", "KVCache"))
                 except (PrefixCacheCorruption, OSError, Exception) as e:
-                    logger.warning("prefix_cache_disk_load_failed",
-                                   path=str(entry_path), error=str(e))
+                    logger.warning(
+                        "prefix_cache_disk_load_failed", path=str(entry_path), error=str(e)
+                    )
                     # Remove corrupt entry
                     entry_path.unlink(missing_ok=True)
                     meta_path.unlink(missing_ok=True)

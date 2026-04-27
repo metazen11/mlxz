@@ -1,4 +1,5 @@
 """OpenAI SDK smoke tests against an in-process mlxz ASGI app."""
+
 from __future__ import annotations
 
 import threading
@@ -92,11 +93,18 @@ def sdk_app():
 
     config = RuntimeConfig(model="mock-model")
     app.state.engine = _MockEngine()
-    app.state.admission = AdmissionController(_make_budget(), config, n_layers=2, n_heads=2, head_dim=64)
+    app.state.admission = AdmissionController(
+        _make_budget(),
+        config,
+        n_layers=2,
+        n_heads=2,
+        head_dim=64,
+    )
     app.state.tokenizer = _MockTokenizer()
     app.state.cancellations = CancellationRegistry()
     app.state.telemetry = None
     app.state.telemetry_run_id = None
+    return app
 
 
 @pytest.fixture

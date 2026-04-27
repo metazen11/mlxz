@@ -1,4 +1,5 @@
 """Content-addressed prefix hashing using SHA-256 at block boundaries."""
+
 from __future__ import annotations
 
 import hashlib

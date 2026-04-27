@@ -1,4 +1,5 @@
 """Shared types for the prefix cache module."""
+
 from __future__ import annotations
 
 import time
@@ -16,6 +17,7 @@ class CachedPrefix:
     - KVCache: (keys, values) where each is mx.array
     - QuantizedKVCache: ((qk_data, qk_scales, qk_biases), (qv_data, qv_scales, qv_biases))
     """
+
     token_hashes: tuple[bytes, ...]
     kv_states: list[Any]  # per-layer state from KVCache.state
     n_tokens: int
@@ -28,6 +30,7 @@ class CachedPrefix:
 @dataclass(frozen=True, slots=True)
 class PrefixMatch:
     """Result of a successful prefix cache lookup."""
+
     n_matched_tokens: int
     kv_states: list[Any]  # reference to cached KV (not a copy)
     cache_tier: str  # "memory" or "disk"

@@ -1,4 +1,5 @@
 """Continuous batching engine — iteration-level batching for concurrent requests."""
+
 from __future__ import annotations
 
 import asyncio
@@ -9,6 +10,7 @@ from typing import Any
 import mlx.core as mx
 import mlx.nn as nn
 import structlog
+from mlx.utils import tree_flatten, tree_map, tree_unflatten
 
 from mlxz.config import RuntimeConfig
 from mlxz.engine.cache_utils import build_prompt_cache, cache_type_name
@@ -27,7 +29,6 @@ from mlxz.types import (
     ResidencyBudget,
     ThermalState,
 )
-from mlx.utils import tree_flatten, tree_map, tree_unflatten
 
 logger = structlog.get_logger()
 
@@ -204,8 +205,7 @@ class ContinuousBatchingEngine:
                 prefill_done=False,
                 rng_key=(
                     mx.random.key(request.sampling.seed)
-                    if request.sampling.seed is not None
-                    and request.sampling.temperature != 0.0
+                    if request.sampling.seed is not None and request.sampling.temperature != 0.0
                     else None
                 ),
             )
@@ -245,7 +245,10 @@ class ContinuousBatchingEngine:
                     if cached_kv is not None and n_matched > 0:
                         n_prefix_tokens = n_matched
                         cache_tier = "memory"
-                        if cached_type == "QuantizedKVCache" and cache_type_name(active.cache) != "QuantizedKVCache":
+                        if (
+                            cached_type == "QuantizedKVCache"
+                            and cache_type_name(active.cache) != "QuantizedKVCache"
+                        ):
                             active.cache = build_prompt_cache(
                                 self._model,
                                 quantized=True,
@@ -264,7 +267,10 @@ class ContinuousBatchingEngine:
                     if cached_kv is not None and n_matched > 0:
                         n_prefix_tokens = n_matched
                         cache_tier = "disk"
-                        if cached_type == "QuantizedKVCache" and cache_type_name(active.cache) != "QuantizedKVCache":
+                        if (
+                            cached_type == "QuantizedKVCache"
+                            and cache_type_name(active.cache) != "QuantizedKVCache"
+                        ):
                             active.cache = build_prompt_cache(
                                 self._model,
                                 quantized=True,
@@ -329,13 +335,9 @@ class ContinuousBatchingEngine:
             active.kv_charged = kv_charged
 
             # First token
-            token_id, logprob = sample(
-                logits[:, -1, :], request.sampling, active.rng_key
-            )
+            token_id, logprob = sample(logits[:, -1, :], request.sampling, active.rng_key)
             token_text = self._tokenizer.decode([token_id])
-            request.output_channel.sync_q.put(
-                Token(token_id, token_text, logprob)
-            )
+            request.output_channel.sync_q.put(Token(token_id, token_text, logprob))
             request.completion_token_count = 1
             active.last_token_id = token_id
             active.prefill_done = True
@@ -383,9 +385,7 @@ class ContinuousBatchingEngine:
 
         decode_groups: dict[int, list[tuple[str, _ActiveRequest]]] = {}
         for req_id, active in decoding:
-            decode_groups.setdefault(_cache_offset(active.cache), []).append(
-                (req_id, active)
-            )
+            decode_groups.setdefault(_cache_offset(active.cache), []).append((req_id, active))
 
         # Fast path: single request — compiled greedy decode loop.
         # Uses MLX compile for the hottest decode path when logprobs are not
@@ -417,9 +417,7 @@ class ContinuousBatchingEngine:
                         self._model, active.cache
                     )
             except Exception:
-                logger.warning(
-                    "decode_compile_failed", request_id=req_id, exc_info=True
-                )
+                logger.warning("decode_compile_failed", request_id=req_id, exc_info=True)
                 compiled_step = None
                 compiled_state = None
                 compiled_chunk = None
@@ -466,9 +464,7 @@ class ContinuousBatchingEngine:
                         self._kv_used_bytes += step_kv * generated_in_chunk
                         for token_id in chunk_token_ids[:remaining]:
                             token_text = tokenizer_decode([token_id])
-                            request.output_channel.sync_q.put(
-                                Token(token_id, token_text, None)
-                            )
+                            request.output_channel.sync_q.put(Token(token_id, token_text, None))
                             request.completion_token_count += 1
                             active.last_token_id = token_id
                             if eos_token_id is not None and token_id == eos_token_id:
@@ -487,9 +483,7 @@ class ContinuousBatchingEngine:
                     mx.eval(next_token)
                     token_id = next_token.item()
                     token_text = tokenizer_decode([token_id])
-                    request.output_channel.sync_q.put(
-                        Token(token_id, token_text, None)
-                    )
+                    request.output_channel.sync_q.put(Token(token_id, token_text, None))
                     request.completion_token_count += 1
                     active.last_token_id = token_id
                     active.kv_charged += step_kv
@@ -551,9 +545,7 @@ class ContinuousBatchingEngine:
                     # Deliver current token
                     token_id = next_y.item()
                     token_text = tokenizer_decode([token_id])
-                    request.output_channel.sync_q.put(
-                        Token(token_id, token_text, None)
-                    )
+                    request.output_channel.sync_q.put(Token(token_id, token_text, None))
                     request.completion_token_count += 1
                     active.last_token_id = token_id
                     active.kv_charged += step_kv
@@ -594,18 +586,12 @@ class ContinuousBatchingEngine:
                     active.rng_key = mx.random.split(active.rng_key)[0]
 
                 with self._guard:
-                    logits = self._model(
-                        mx.array([[active.last_token_id]]), cache=active.cache
-                    )
+                    logits = self._model(mx.array([[active.last_token_id]]), cache=active.cache)
                     mx.eval(logits)
 
-                token_id, logprob = sample(
-                    logits[:, -1, :], request.sampling, active.rng_key
-                )
+                token_id, logprob = sample(logits[:, -1, :], request.sampling, active.rng_key)
                 token_text = tokenizer_decode([token_id])
-                request.output_channel.sync_q.put(
-                    Token(token_id, token_text, logprob)
-                )
+                request.output_channel.sync_q.put(Token(token_id, token_text, logprob))
 
                 request.completion_token_count += 1
                 active.last_token_id = token_id
@@ -638,16 +624,13 @@ class ContinuousBatchingEngine:
 
             # Batch only requests whose current cache length is already aligned.
             # MLX's cache API still requires a shared offset across the batch.
-            batch_size = len(live_group)
             batched_cache = _build_batched_cache([active.cache for _, active in live_group])
             batch_tokens = mx.array([[active.last_token_id] for _, active in live_group])
             with self._guard:
                 logits = self._model(batch_tokens, cache=batched_cache)
                 mx.eval(logits)
 
-            _scatter_batched_cache(
-                batched_cache, [active.cache for _, active in live_group]
-            )
+            _scatter_batched_cache(batched_cache, [active.cache for _, active in live_group])
 
             token_rows = logits[:, -1, :]
             greedy_batch = all(
@@ -674,9 +657,7 @@ class ContinuousBatchingEngine:
                     )
 
                 token_text = tokenizer_decode([token_id])
-                request.output_channel.sync_q.put(
-                    Token(token_id, token_text, logprob)
-                )
+                request.output_channel.sync_q.put(Token(token_id, token_text, logprob))
                 request.completion_token_count += 1
                 active.last_token_id = token_id
                 active.kv_charged += step_kv
@@ -705,9 +686,7 @@ class ContinuousBatchingEngine:
 
                 log = logger.bind(request_id=req_id)
                 if active.decode_started_at is not None:
-                    decode_duration = max(
-                        time.perf_counter() - active.decode_started_at, 1e-9
-                    )
+                    decode_duration = max(time.perf_counter() - active.decode_started_at, 1e-9)
                     request.decode_tps = request.completion_token_count / decode_duration
                 log.info(
                     "request_retired",
@@ -810,9 +789,9 @@ class _ActiveRequest:
 # -- Type imports at module level for type checking only -------------------
 # Placed after the class to avoid circular imports at runtime.
 
-from mlxz.prefix_cache.memory import PrefixCacheMemory  # noqa: E402
 from mlxz.prefix_cache.disk import PrefixCacheDisk  # noqa: E402
 from mlxz.prefix_cache.hasher import RollingPrefixHasher  # noqa: E402
+from mlxz.prefix_cache.memory import PrefixCacheMemory  # noqa: E402
 
 
 def _cache_offset(cache: list[Any]) -> int:

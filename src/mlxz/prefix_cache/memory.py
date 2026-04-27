@@ -1,4 +1,5 @@
 """In-memory prefix cache with LRU eviction."""
+
 from __future__ import annotations
 
 import copy
@@ -20,9 +21,11 @@ def _deep_copy_kv_states(kv_states: list[Any]) -> list[Any]:
     for layer_state in kv_states:
         if isinstance(layer_state, tuple):
             copied = tuple(
-                mx.array(arr) if isinstance(arr, mx.array) else
-                tuple(mx.array(a) if isinstance(a, mx.array) else a for a in arr)
-                if isinstance(arr, tuple) else arr
+                mx.array(arr)
+                if isinstance(arr, mx.array)
+                else tuple(mx.array(a) if isinstance(a, mx.array) else a for a in arr)
+                if isinstance(arr, tuple)
+                else arr
                 for arr in layer_state
             )
             result.append(copied)
@@ -71,9 +74,9 @@ class PrefixCacheMemory:
                 entry.last_access = time.monotonic()
                 self._stats.hits += 1
                 self._stats.hit_bytes += entry.size_bytes
-                logger.debug("prefix_cache_memory_hit",
-                             matched_chunks=length,
-                             matched_tokens=entry.n_tokens)
+                logger.debug(
+                    "prefix_cache_memory_hit", matched_chunks=length, matched_tokens=entry.n_tokens
+                )
                 return entry.n_tokens, entry.kv_states, entry.cache_type
         self._stats.misses += 1
         return 0, None, None
@@ -181,8 +184,11 @@ class PrefixCacheMemory:
             evicted = self._entries.pop(oldest_key)
             self._used_bytes -= evicted.size_bytes
             self._stats.evictions += 1
-            logger.debug("prefix_cache_memory_evicted",
-                         n_tokens=evicted.n_tokens, size_bytes=evicted.size_bytes)
+            logger.debug(
+                "prefix_cache_memory_evicted",
+                n_tokens=evicted.n_tokens,
+                size_bytes=evicted.size_bytes,
+            )
 
     # -- Async interface (satisfies PrefixCacheProtocol) --
 

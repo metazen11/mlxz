@@ -56,6 +56,7 @@ Current entry:
 - `mx.async_eval()` prefetch in the shared engine/cache path: crashed on generations over 64 tokens because cache state became inconsistent across streams.
 - `mx.compile()` on the decode step: safe, but only a small win. On the current matrix it improved 8B by about 1.6%, 3B by about 0.3%, and 14B by about 1.4%. Not enough to close the mlx-lm gap by itself.
 - Speculative decoding with a 3B draft model on the 8B target: started after wiring `set_prefix_cache()` into the engine, but the current implementation was slower than plain single-stream decoding and worse than `mlx-lm` on the same benchmark. Keep it out of the default path until the draft-target cache reuse story is stronger.
+- KV cache growth-step sweep (`256` vs `1024` on the 8B long-prompt server benchmark): no material win. `mlxz` stayed behind `mlx-lm` on the 1024-token prompt/128-token generation run in both configurations, so the knob is not worth carrying forward as a default optimization.
 
 ---
 
@@ -219,7 +220,21 @@ def _compiled_decode_step(model, token_id, cache):
 - `Llama-3.1-8B-Instruct-4bit`: `mlxz` 65.8 tok/s vs `mlx-lm` 37.8 tok/s, with total latency 4104 ms vs 4894 ms.
 - `Llama-3.2-3B-Instruct-4bit`: `mlxz` 64.0 tok/s vs `mlx-lm` 76.8 tok/s, with total latency 3218 ms vs 2807 ms.
 
-**Status:** PARTIAL WIN. This is a real model-agnostic gain on the longer 8B context, but it does not generalize to the 3B run. Keep the wiring, keep measuring 14B, and treat this as a workload-dependent optimization rather than a universal throughput win.
+**Implementation note:** The local `QuantizedKVCache` wrapper now restores `offset` when prefix-cache state is assigned. Upstream `mlx_lm` preserves the quantized buffers but leaves `offset` stale, which would make restored caches inconsistent after a prefix hit.
+
+**Follow-up benchmark on the current branch (`Llama-3.1-8B-Instruct-4bit`, prompt~1228, max_tokens=128, 3 runs):**
+- `mlxz`: `62.0 tok/s`, TTFT `129.4 ms`, total `2195.1 ms`
+- `mlx-lm`: `32.2 tok/s`, total `7027.0 ms`
+
+**Additional follow-up on `Qwen2.5-14B-Instruct-4bit`, prompt~1222, max_tokens=128, 3 runs:**
+- `mlxz`: `18.4 tok/s`, TTFT `590.6 ms`, total `7550.4 ms`
+- `mlx-lm`: `17.5 tok/s`, total `11160.2 ms`
+
+**Counterexample on `Llama-3.2-3B-Instruct-4bit`, prompt~1228, max_tokens=128, 3 runs:**
+- `mlxz`: `54.8 tok/s`, TTFT `88.1 ms`, total `2424.7 ms`
+- `mlx-lm`: `67.9 tok/s`, total `2899.6 ms`
+
+**Status:** PARTIAL WIN. This is a real win on the longer 8B and 14B contexts, but it does not generalize to the 3B run. Keep the wiring, keep measuring 3B/14B, and treat this as a workload-dependent optimization rather than a universal throughput win.
 
 ---
 

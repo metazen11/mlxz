@@ -1,15 +1,16 @@
 """Request lifecycle and token delivery types."""
+
 from __future__ import annotations
 
-import uuid
 import time
+import uuid
 from dataclasses import dataclass, field, replace
 from typing import ClassVar
 
 import janus
 
-from mlxz.types import SamplingParams, RequestState
 from mlxz.engine.thread_boundary import RequestBridge
+from mlxz.types import RequestState, SamplingParams
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +45,7 @@ class StopChecker:
                 return True, seq
         # Keep only the tail needed for boundary detection
         if len(self._buffer) > self._max_len * 2:
-            self._buffer = self._buffer[-self._max_len:]
+            self._buffer = self._buffer[-self._max_len :]
         return False, None
 
     def reset(self) -> None:

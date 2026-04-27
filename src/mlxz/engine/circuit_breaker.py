@@ -1,30 +1,32 @@
 """Circuit breakers for thermal throttling and memory pressure response."""
+
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 import structlog
 
-from mlxz.types import ThermalState, MemoryPressure
+from mlxz.types import ThermalState
 
 logger = structlog.get_logger()
 
 
 class CircuitState(Enum):
-    CLOSED = "closed"       # Normal — accepting requests
-    OPEN = "open"           # Tripped — rejecting requests
-    HALF_OPEN = "half_open" # Testing — accepting limited requests
+    CLOSED = "closed"  # Normal — accepting requests
+    OPEN = "open"  # Tripped — rejecting requests
+    HALF_OPEN = "half_open"  # Testing — accepting limited requests
 
 
 @dataclass(slots=True)
 class CircuitBreakerConfig:
     """Configuration for a circuit breaker."""
-    thermal_critical_threshold: int = 3      # consecutive critical readings to trip
+
+    thermal_critical_threshold: int = 3  # consecutive critical readings to trip
     memory_pressure_threshold: float = 0.90  # KV usage ratio to trip
-    cooldown_seconds: float = 30.0           # time in OPEN before testing HALF_OPEN
-    half_open_max_requests: int = 2          # max concurrent in HALF_OPEN
+    cooldown_seconds: float = 30.0  # time in OPEN before testing HALF_OPEN
+    half_open_max_requests: int = 2  # max concurrent in HALF_OPEN
 
 
 class CircuitBreaker:
@@ -62,7 +64,8 @@ class CircuitBreaker:
                 self._half_open_active = 0
                 logger.info("circuit_breaker_half_open", elapsed_s=round(elapsed, 1))
                 return True, ""
-            return False, f"Circuit breaker OPEN (cooldown {self._config.cooldown_seconds - elapsed:.0f}s remaining)"
+            remaining = self._config.cooldown_seconds - elapsed
+            return False, f"Circuit breaker OPEN (cooldown {remaining:.0f}s remaining)"
 
         if self._state == CircuitState.HALF_OPEN:
             if self._half_open_active < self._config.half_open_max_requests:

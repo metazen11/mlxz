@@ -1,0 +1,10 @@
+{
+  "typeCheckingMode": "basic",
+  "include": [
+    "src/mlxz/config.py",
+    "src/mlxz/api/schemas.py",
+    "src/mlxz/scheduler/chunker.py",
+    "src/mlxz/security/gguf_validator.py",
+    "src/mlxz/engine/request.py"
+  ]
+}
