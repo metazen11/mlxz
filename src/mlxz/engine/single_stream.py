@@ -1,4 +1,5 @@
 """Single-stream inference engine (batch=1, synchronous)."""
+
 from __future__ import annotations
 
 import threading
@@ -11,11 +12,11 @@ import structlog
 
 from mlxz.config import RuntimeConfig
 from mlxz.engine.cache_utils import build_prompt_cache, cache_type_name
-from mlxz.engine.request import Request, Token
 from mlxz.engine.decode_compiler import (
     build_compiled_greedy_chunk,
     build_compiled_greedy_step,
 )
+from mlxz.engine.request import Request, Token
 from mlxz.engine.sampling import sample
 from mlxz.engine.thread_boundary import CancellationRegistry, MxEvalGuard, RequestBridge
 from mlxz.types import (
@@ -206,7 +207,10 @@ class SingleStreamEngine:
                     if cached_kv is not None and n_matched > 0:
                         n_prefix_tokens = n_matched
                         cache_tier = "memory"
-                        if cached_type == "QuantizedKVCache" and cache_type_name(cache) != "QuantizedKVCache":
+                        if (
+                            cached_type == "QuantizedKVCache"
+                            and cache_type_name(cache) != "QuantizedKVCache"
+                        ):
                             cache = build_prompt_cache(
                                 self._model,
                                 quantized=True,
@@ -226,7 +230,10 @@ class SingleStreamEngine:
                     if cached_kv is not None and n_matched > 0:
                         n_prefix_tokens = n_matched
                         cache_tier = "disk"
-                        if cached_type == "QuantizedKVCache" and cache_type_name(cache) != "QuantizedKVCache":
+                        if (
+                            cached_type == "QuantizedKVCache"
+                            and cache_type_name(cache) != "QuantizedKVCache"
+                        ):
                             cache = build_prompt_cache(
                                 self._model,
                                 quantized=True,
@@ -253,6 +260,7 @@ class SingleStreamEngine:
                 # Full hit -- re-run last token for fresh logits
                 try:
                     from mlx_lm.models.cache import trim_prompt_cache
+
                     trim_prompt_cache(cache, 1)
                 except ImportError:
                     # Fallback: manually adjust offset
@@ -277,11 +285,7 @@ class SingleStreamEngine:
             request.ttft_ms = ttft * 1000.0
 
             # --- Store in memory cache on miss ---
-            if (
-                n_prefix_tokens == 0
-                and self._prefix_cache_memory is not None
-                and token_hashes
-            ):
+            if n_prefix_tokens == 0 and self._prefix_cache_memory is not None and token_hashes:
                 try:
                     self._prefix_cache_memory.store_sync(
                         token_hashes,
@@ -294,7 +298,7 @@ class SingleStreamEngine:
 
             # --- Record TTFT metrics ---
             try:
-                from mlxz.api.metrics import ttft_seconds, prefix_cache_hits_total
+                from mlxz.api.metrics import prefix_cache_hits_total, ttft_seconds
 
                 cache_label = "hit" if n_prefix_tokens > 0 else "miss"
                 ttft_seconds.labels(prefix_cache=cache_label).observe(ttft)
@@ -318,16 +322,14 @@ class SingleStreamEngine:
             request.transition(RequestState.DECODING)
 
             greedy_fast_path = (
-                request.sampling.temperature == 0.0
-                and not request.sampling.return_logprob
+                request.sampling.temperature == 0.0 and not request.sampling.return_logprob
             )
             chunked_fast_path = greedy_fast_path and request._stop_checker is None
 
             # Initialize RNG key for deterministic sampling
             rng_key = (
                 mx.random.key(request.sampling.seed)
-                if request.sampling.seed is not None
-                and request.sampling.temperature != 0.0
+                if request.sampling.seed is not None and request.sampling.temperature != 0.0
                 else None
             )
 
@@ -336,9 +338,7 @@ class SingleStreamEngine:
                 token_id = mx.argmax(logits[:, -1, :], axis=-1).item()
                 logprob = None
             else:
-                token_id, logprob = sample(
-                    logits[:, -1, :], request.sampling, rng_key
-                )
+                token_id, logprob = sample(logits[:, -1, :], request.sampling, rng_key)
             token_text = tokenizer_decode([token_id])
             token_put(Token(token_id, token_text, logprob))
             request.completion_token_count = 1
@@ -363,9 +363,7 @@ class SingleStreamEngine:
                     compiled_chunk_state = None
             elif greedy_fast_path:
                 try:
-                    compiled_step, compiled_state = build_compiled_greedy_step(
-                        self._model, cache
-                    )
+                    compiled_step, compiled_state = build_compiled_greedy_step(self._model, cache)
                 except Exception:
                     logger.warning(
                         "decode_compile_failed",
@@ -446,9 +444,7 @@ class SingleStreamEngine:
                         logits = self._model(mx.array([[token_id]]), cache=cache)
                         mx.eval(logits)
 
-                    token_id, logprob = sample(
-                        logits[:, -1, :], request.sampling, rng_key
-                    )
+                    token_id, logprob = sample(logits[:, -1, :], request.sampling, rng_key)
 
                 token_text = tokenizer_decode([token_id])
 
@@ -468,9 +464,7 @@ class SingleStreamEngine:
 
             decode_duration = time.perf_counter() - decode_start
             decode_tps = (
-                request.completion_token_count / decode_duration
-                if decode_duration > 0
-                else 0
+                request.completion_token_count / decode_duration if decode_duration > 0 else 0
             )
             request.decode_tps = decode_tps
             log.info(
@@ -538,6 +532,6 @@ class SingleStreamEngine:
 # Placed after the class to avoid circular imports at runtime.
 # The actual imports happen lazily in set_prefix_cache / _process_request.
 
-from mlxz.prefix_cache.memory import PrefixCacheMemory  # noqa: E402
 from mlxz.prefix_cache.disk import PrefixCacheDisk  # noqa: E402
 from mlxz.prefix_cache.hasher import RollingPrefixHasher  # noqa: E402
+from mlxz.prefix_cache.memory import PrefixCacheMemory  # noqa: E402

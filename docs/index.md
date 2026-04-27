@@ -16,7 +16,7 @@ mlxz serves LLMs on your Mac by porting useful vLLM-class serving ideas to MLX a
 
 ## Thesis
 
-The project is engine-first. The public API and observability are support systems for the real goal: better TTFT, decode throughput, concurrency, and correctness on Apple Silicon. Start with [whitepaper.md](whitepaper.md) for the explicit thesis and [../CONTRACT.md](../CONTRACT.md) for the operating loop.
+The project is engine-first. The public API and observability are support systems for the real goal: better TTFT, decode throughput, concurrency, and correctness on Apple Silicon. Start with [whitepaper.md](whitepaper.md) for the explicit thesis and [contract.md](contract.md) for the operating loop.
 
 ## Quick Start
 

@@ -1,4 +1,5 @@
 """FCFS priority queue for request scheduling."""
+
 from __future__ import annotations
 
 import time
@@ -10,6 +11,7 @@ from typing import Any
 
 class Priority(IntEnum):
     """Request priority classes. Lower value = higher priority."""
+
     HIGH = 0
     NORMAL = 1
     LOW = 2
@@ -18,6 +20,7 @@ class Priority(IntEnum):
 @dataclass(slots=True, order=True)
 class QueueEntry:
     """Priority queue entry with FCFS tiebreaking."""
+
     priority: Priority
     arrival_time: float = field(compare=True)
     request: Any = field(compare=False)
@@ -32,9 +35,7 @@ class PriorityScheduler:
 
     def __init__(self, max_queue_size: int = 256) -> None:
         self._max_queue_size = max_queue_size
-        self._queues: dict[Priority, deque[QueueEntry]] = {
-            p: deque() for p in Priority
-        }
+        self._queues: dict[Priority, deque[QueueEntry]] = {p: deque() for p in Priority}
         self._size: int = 0
 
     def enqueue(self, request: Any, priority: Priority = Priority.NORMAL) -> bool:
@@ -91,7 +92,7 @@ class PriorityScheduler:
         for priority in Priority:
             queue = self._queues[priority]
             for i, entry in enumerate(queue):
-                if hasattr(entry.request, 'id') and entry.request.id == request_id:
+                if hasattr(entry.request, "id") and entry.request.id == request_id:
                     del queue[i]  # O(n) but queue is small
                     self._size -= 1
                     return True

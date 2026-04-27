@@ -1,4 +1,5 @@
 """Compiled decode-step helpers for greedy MLX generation."""
+
 from __future__ import annotations
 
 from functools import partial

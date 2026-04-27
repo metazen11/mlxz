@@ -1,8 +1,10 @@
 """Admission controller — pure deterministic gate between API and engine."""
+
 from __future__ import annotations
 
 import structlog
 
+from mlxz.config import RuntimeConfig
 from mlxz.types import (
     AdmissionDecision,
     AdmissionSnapshot,
@@ -10,8 +12,6 @@ from mlxz.types import (
     ResidencyBudget,
     ThermalState,
 )
-from mlxz.config import RuntimeConfig
-
 
 logger = structlog.get_logger()
 
@@ -54,29 +54,44 @@ class AdmissionController:
         """Returns (decision, human-readable reason). Deterministic; no I/O."""
         # 1. Thermal
         if snap.thermal_state == ThermalState.CRITICAL:
-            return (AdmissionDecision.REJECT_THERMAL,
-                    "System thermal state is critical; throttling new requests")
+            return (
+                AdmissionDecision.REJECT_THERMAL,
+                "System thermal state is critical; throttling new requests",
+            )
 
         # 2. Memory pressure
         if snap.memory_pressure == MemoryPressure.CRITICAL:
-            return (AdmissionDecision.REJECT_MEMORY_PRESSURE,
-                    "System memory pressure is critical")
+            return (AdmissionDecision.REJECT_MEMORY_PRESSURE, "System memory pressure is critical")
 
         # 3. Queue depth
         max_concurrent = self._config.scheduler.max_concurrent_requests
         if snap.running_requests + snap.queued_requests >= max_concurrent:
-            return (AdmissionDecision.REJECT_QUEUE_FULL,
-                    f"Queue full: {snap.running_requests} running + {snap.queued_requests} queued >= {max_concurrent}")
+            return (
+                AdmissionDecision.REJECT_QUEUE_FULL,
+                (
+                    f"Queue full: {snap.running_requests} running + "
+                    f"{snap.queued_requests} queued >= {max_concurrent}"
+                ),
+            )
 
         # 4. KV budget projection
         projected_bytes = self._project_peak(prompt_tokens, max_new_tokens)
-        headroom_bytes = int(self._budget.kv_budget_bytes * self._config.scheduler.admission_headroom)
+        headroom_bytes = int(
+            self._budget.kv_budget_bytes * self._config.scheduler.admission_headroom
+        )
         available = self._budget.kv_budget_bytes - snap.kv_used_bytes - headroom_bytes
 
         if projected_bytes > available:
-            return (AdmissionDecision.REJECT_OVER_BUDGET,
-                    f"Projected {projected_bytes:,} bytes exceeds available {available:,} bytes "
-                    f"(budget={self._budget.kv_budget_bytes:,}, used={snap.kv_used_bytes:,}, headroom={headroom_bytes:,})")
+            return (
+                AdmissionDecision.REJECT_OVER_BUDGET,
+                (
+                    f"Projected {projected_bytes:,} bytes exceeds available "
+                    f"{available:,} bytes "
+                    f"(budget={self._budget.kv_budget_bytes:,}, "
+                    f"used={snap.kv_used_bytes:,}, "
+                    f"headroom={headroom_bytes:,})"
+                ),
+            )
 
         return (AdmissionDecision.ACCEPT, "")
 

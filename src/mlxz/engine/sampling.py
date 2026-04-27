@@ -1,4 +1,5 @@
 """Sampling pipeline for logit-to-token conversion."""
+
 from __future__ import annotations
 
 import mlx.core as mx

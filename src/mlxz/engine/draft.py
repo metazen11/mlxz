@@ -1,4 +1,5 @@
 """Draft model for speculative token generation."""
+
 from __future__ import annotations
 
 from typing import Any

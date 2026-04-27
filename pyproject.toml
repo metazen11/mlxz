@@ -7,9 +7,9 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Mauricio Zuniga" }]
 dependencies = [
-    "mlx>=0.22,<0.23",
-    "mlx-lm>=0.21,<0.23",
-    "gguf>=0.10,<0.12",
+    "mlx>=0.22,<0.23; platform_system == 'Darwin' and platform_machine == 'arm64'",
+    "mlx-lm>=0.21,<0.23; platform_system == 'Darwin' and platform_machine == 'arm64'",
+    "gguf>=0.10,<0.12; platform_system == 'Darwin' and platform_machine == 'arm64'",
     "fastapi>=0.115,<1.0",
     "uvicorn[standard]>=0.30,<1.0",
     "pydantic>=2.7,<3.0",

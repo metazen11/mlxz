@@ -1,0 +1,26 @@
+site_name: mlxz
+site_description: High-throughput local inference server for Apple Silicon
+site_author: Mauricio Zuniga
+docs_dir: docs
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.tracking
+    - content.code.copy
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Architecture: architecture.md
+  - Contract: contract.md
+  - Whitepaper: whitepaper.md
+  - Experiments: experiments.md
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true

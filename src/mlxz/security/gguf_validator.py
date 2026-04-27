@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import struct
-import sys
 from pathlib import Path
 
 from mlxz.exceptions import GGUFValidationError
@@ -102,9 +101,7 @@ class GGUFValidator:
         #   version:            uint32  (4 bytes)
         #   tensor_count:       uint64  (8 bytes)
         #   metadata_kv_count:  uint64  (8 bytes)
-        magic, version, tensor_count, _metadata_kv_count = struct.unpack(
-            "<IIqq", header_bytes
-        )
+        magic, version, tensor_count, _metadata_kv_count = struct.unpack("<IIqq", header_bytes)
 
         # -- Magic check -------------------------------------------------------
         if magic != _GGUF_MAGIC:

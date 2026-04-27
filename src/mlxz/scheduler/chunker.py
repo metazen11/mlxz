@@ -4,19 +4,21 @@ Splits long prefill requests into chunks of configurable size,
 allowing decode steps to interleave. This prevents head-of-line
 blocking where a long prefill starves decoding requests.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(slots=True)
 class PrefillChunk:
     """A chunk of tokens from a prefill request."""
+
     request_id: str
-    tokens: list[int]           # token IDs for this chunk
-    start_pos: int              # position in the full prompt
-    is_last: bool               # True if this is the final chunk
-    total_prompt_tokens: int    # total prompt length for reference
+    tokens: list[int]  # token IDs for this chunk
+    start_pos: int  # position in the full prompt
+    is_last: bool  # True if this is the final chunk
+    total_prompt_tokens: int  # total prompt length for reference
 
 
 class ChunkedPrefillScheduler:

@@ -1,4 +1,5 @@
 """Speculative decoding engine — draft-target with rejection sampling."""
+
 from __future__ import annotations
 
 import asyncio
@@ -143,8 +144,9 @@ class SpeculativeEngine:
     def run(self) -> None:
         """Engine loop — same pattern as SingleStreamEngine but with speculative decode."""
         self._guard = MxEvalGuard()
-        logger.info("speculative_engine_started", model=self._model_name,
-                     draft_k=self._current_draft_k)
+        logger.info(
+            "speculative_engine_started", model=self._model_name, draft_k=self._current_draft_k
+        )
 
         while not self._shutdown_requested.is_set():
             request = self._bridge.get_next_sync()
@@ -153,8 +155,7 @@ class SpeculativeEngine:
                 continue
             self._process_request(request)
 
-        logger.info("speculative_engine_stopped",
-                     acceptance_rate=round(self.acceptance_rate, 3))
+        logger.info("speculative_engine_stopped", acceptance_rate=round(self.acceptance_rate, 3))
 
     def _process_request(self, request: Request) -> None:
         assert self._target_model is not None
@@ -204,7 +205,10 @@ class SpeculativeEngine:
                     if cached_kv is not None and n_matched > 0:
                         n_prefix_tokens = n_matched
                         cache_tier = "memory"
-                        if cached_type == "QuantizedKVCache" and cache_type_name(target_cache) != "QuantizedKVCache":
+                        if (
+                            cached_type == "QuantizedKVCache"
+                            and cache_type_name(target_cache) != "QuantizedKVCache"
+                        ):
                             target_cache = build_prompt_cache(
                                 self._target_model,
                                 quantized=True,
@@ -222,7 +226,10 @@ class SpeculativeEngine:
                     if cached_kv is not None and n_matched > 0:
                         n_prefix_tokens = n_matched
                         cache_tier = "disk"
-                        if cached_type == "QuantizedKVCache" and cache_type_name(target_cache) != "QuantizedKVCache":
+                        if (
+                            cached_type == "QuantizedKVCache"
+                            and cache_type_name(target_cache) != "QuantizedKVCache"
+                        ):
                             target_cache = build_prompt_cache(
                                 self._target_model,
                                 quantized=True,
@@ -275,11 +282,7 @@ class SpeculativeEngine:
             ttft = time.perf_counter() - t0
             request.ttft_ms = ttft * 1000.0
 
-            if (
-                n_prefix_tokens == 0
-                and self._prefix_cache_memory is not None
-                and token_hashes
-            ):
+            if n_prefix_tokens == 0 and self._prefix_cache_memory is not None and token_hashes:
                 try:
                     self._prefix_cache_memory.store_sync(
                         token_hashes,
@@ -320,8 +323,7 @@ class SpeculativeEngine:
                     break
 
                 # 1. Draft model generates k speculative tokens
-                k = min(self._current_draft_k,
-                        request.max_tokens - request.completion_token_count)
+                k = min(self._current_draft_k, request.max_tokens - request.completion_token_count)
                 draft_tokens = self._draft.generate_draft(token_id, draft_cache, k)
 
                 if not draft_tokens:
@@ -332,9 +334,7 @@ class SpeculativeEngine:
                 verify_input = mx.array([[token_id] + draft_ids])
 
                 with self._guard:
-                    target_verify_logits = self._target_model(
-                        verify_input, cache=target_cache
-                    )
+                    target_verify_logits = self._target_model(verify_input, cache=target_cache)
                     mx.eval(target_verify_logits)
 
                 # 3. Rejection sampling (Chen et al.)
@@ -359,9 +359,7 @@ class SpeculativeEngine:
                     if r < acceptance_prob:
                         # Accept draft token
                         text = self._tokenizer.decode([draft_token_id])
-                        request.output_channel.sync_q.put(
-                            Token(draft_token_id, text, None)
-                        )
+                        request.output_channel.sync_q.put(Token(draft_token_id, text, None))
                         request.completion_token_count += 1
                         token_id = draft_token_id
                         accepted += 1
@@ -379,9 +377,7 @@ class SpeculativeEngine:
                             new_token = mx.argmax(p_target).item()
 
                         text = self._tokenizer.decode([new_token])
-                        request.output_channel.sync_q.put(
-                            Token(new_token, text, None)
-                        )
+                        request.output_channel.sync_q.put(Token(new_token, text, None))
                         request.completion_token_count += 1
                         token_id = new_token
 
@@ -416,17 +412,17 @@ class SpeculativeEngine:
 
             decode_duration = time.perf_counter() - decode_start
             request.decode_tps = (
-                request.completion_token_count / decode_duration
-                if decode_duration > 0
-                else 0.0
+                request.completion_token_count / decode_duration if decode_duration > 0 else 0.0
             )
 
-            log.info("request_completed",
-                     completion_tokens=request.completion_token_count,
-                     finish_reason=request.finish_reason,
-                     decode_tps=round(request.decode_tps, 2),
-                     acceptance_rate=round(self.acceptance_rate, 3),
-                     draft_k=self._current_draft_k)
+            log.info(
+                "request_completed",
+                completion_tokens=request.completion_token_count,
+                finish_reason=request.finish_reason,
+                decode_tps=round(request.decode_tps, 2),
+                acceptance_rate=round(self.acceptance_rate, 3),
+                draft_k=self._current_draft_k,
+            )
 
         except Exception:
             log.exception("request_error")
@@ -463,6 +459,7 @@ class SpeculativeEngine:
             if time.monotonic() - t0 > 30:
                 break
         return DrainResult(
-            completed=0, force_cancelled=self._running_requests,
+            completed=0,
+            force_cancelled=self._running_requests,
             drain_duration_seconds=time.monotonic() - t0,
         )

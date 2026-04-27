@@ -1,12 +1,15 @@
 """Cache construction helpers for engine request paths."""
+
 from __future__ import annotations
 
 from typing import Any
 
 from mlx_lm.models.cache import (
     KVCache,
-    QuantizedKVCache as MLXQuantizedKVCache,
     RotatingKVCache,
+)
+from mlx_lm.models.cache import (
+    QuantizedKVCache as MLXQuantizedKVCache,
 )
 
 

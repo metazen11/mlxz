@@ -19,13 +19,14 @@ from __future__ import annotations
 import asyncio
 import functools
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import janus
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from mlxz.engine.request import Token
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -57,7 +58,7 @@ class RequestBridge:
     # -- per-request token channel ------------------------------------------
 
     @staticmethod
-    def create_token_channel(max_depth: int = 64) -> janus.Queue[int | None]:
+    def create_token_channel(max_depth: int = 64) -> janus.Queue[Token | None]:
         """Create a per-request token delivery channel.
 
         The engine thread puts token IDs on the **sync** side; the API layer
@@ -74,7 +75,7 @@ class RequestBridge:
 
         Returns
         -------
-        janus.Queue[int | None]
+        janus.Queue[Token | None]
             A bidirectional queue whose ``.sync_q`` and ``.async_q``
             facades are safe for their respective threads.
         """
@@ -168,8 +169,7 @@ class CancellationRegistry:
         """
         if request_id in self._events:
             raise ValueError(
-                f"Request {request_id!r} is already registered in the "
-                "cancellation registry"
+                f"Request {request_id!r} is already registered in the cancellation registry"
             )
         event = asyncio.Event()
         self._events[request_id] = event
