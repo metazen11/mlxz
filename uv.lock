@@ -651,21 +651,6 @@ wheels = [
 ]
 
 [[package]]
-name = "gguf"
-version = "0.11.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-    { name = "pyyaml" },
-    { name = "sentencepiece" },
-    { name = "tqdm" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/bd/e9/c42624e92afcfb69d7dd956a1e4f2607264369b4ca5eb9b4d483c02ae2b1/gguf-0.11.0.tar.gz", hash = "sha256:8f5bb7674902ead8c8fe0771c0cab62f8d0f9b160cf4de092bc27be56a3e9104", size = 69210, upload-time = "2024-12-12T16:23:36.29Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d7/e9/7f3568108f80167b68ca03a4e7774781cd711bdae828fb7504d25273d00c/gguf-0.11.0-py3-none-any.whl", hash = "sha256:b7bd175438df8485b37f02f8508a9d3aeb02409df46a7b786ea114f9a770c182", size = 74935, upload-time = "2024-12-12T16:23:35.117Z" },
-]
-
-[[package]]
 name = "ghp-import"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1318,7 +1303,6 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "fastapi" },
-    { name = "gguf", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
     { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "janus" },
@@ -1361,7 +1345,6 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.13,<2.0" },
     { name = "bandit", marker = "extra == 'dev'", specifier = ">=1.8" },
     { name = "fastapi", specifier = ">=0.115,<1.0" },
-    { name = "gguf", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.10,<0.12" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "huggingface-hub", specifier = ">=0.26" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6" },
