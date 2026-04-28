@@ -64,7 +64,7 @@ class TestKVConfigDefaults:
         kv = KVConfig()
         assert kv.bits == 8
         assert kv.group_size == 64
-        assert kv.quantized_kv_start == 256
+        assert kv.quantized_kv_start == 512
         assert kv.streaming_sink_size == 4
 
 

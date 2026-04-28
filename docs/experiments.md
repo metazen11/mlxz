@@ -241,6 +241,24 @@ def _compiled_decode_step(model, token_id, cache):
 
 ---
 
+## Experiment 14: Adaptive Quantized KV Threshold 512 Sweep
+
+**Hypothesis:** A higher threshold would keep medium prompts on standard KV while still enabling quantized KV for the long-context cases where it helps most.
+
+**Change:** Set `quantized_kv_start=512` and reran the long-context benchmark matrix on 3B, 8B, and 14B.
+
+**Measured result on 1024-token prompts with `max_tokens=128`:**
+- `Llama-3.2-3B-Instruct-4bit`: `mlxz` 131.4 tok/s vs `mlx-lm` 148.8 tok/s, with total latency 1042 ms vs 1508 ms.
+- `Llama-3.1-8B-Instruct-4bit`: `mlxz` 68.4 tok/s vs `mlx-lm` 74.6 tok/s, with total latency 1956 ms vs 3250 ms.
+- `Qwen2.5-14B-Instruct-4bit`: `mlxz` 37.2 tok/s vs `mlx-lm` 39.9 tok/s, with total latency 3807 ms vs 6047 ms.
+
+**Measured result on an 8B short prompt (~185 tokens, `max_tokens=128`):**
+- `mlxz` 76.2 tok/s vs `mlx-lm` 77.5 tok/s, with total latency 1730 ms vs 1868 ms.
+
+**Status:** PROMISING. The 512-token threshold keeps the short prompt on standard KV while preserving the long-context latency wins on all three thesis models. Decode throughput is still slightly behind `mlx-lm` on raw long-context runs, but the overall latency picture is now strong enough that `512` is the better default than `256`.
+
+---
+
 ## Key Insights
 
 1. **Metal compute is NOT the bottleneck.** Both mlxz and mlx-lm use the same MLX Metal kernels. The gap is entirely in Python dispatch overhead.
