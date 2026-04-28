@@ -1,4 +1,5 @@
 """OpenAI SDK smoke tests against an in-process mlxz ASGI app."""
+
 from __future__ import annotations
 
 import threading
