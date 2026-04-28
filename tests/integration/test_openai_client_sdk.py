@@ -1,8 +1,6 @@
 """OpenAI SDK smoke tests against an in-process mlxz ASGI app."""
-
 from __future__ import annotations
 
-import anyio
 import threading
 
 import httpx
@@ -26,8 +24,6 @@ from mlxz.types import (
 
 openai = pytest.importorskip("openai")
 AsyncOpenAI = openai.AsyncOpenAI
-
-pytestmark = pytest.mark.anyio
 
 
 class _MockTokenizer:
@@ -87,7 +83,7 @@ def _make_budget() -> ResidencyBudget:
 
 
 @pytest.fixture
-def sdk_client():
+def sdk_app():
     app = FastAPI(title="mlxz-sdk-test")
     app.include_router(health_router)
     app.include_router(openai_router)
@@ -107,49 +103,70 @@ def sdk_client():
     app.state.telemetry_run_id = None
     return app
 
-    transport = ASGITransport(app=app)
-    http_client = httpx.AsyncClient(transport=transport, base_url="http://test")
-    client = AsyncOpenAI(base_url="http://test/v1", api_key="test", http_client=http_client)
-    try:
-        yield client
-    finally:
-        anyio.run(client.close)
+
+@pytest.fixture
+def sdk_transport(sdk_app):
+    return ASGITransport(app=sdk_app)
 
 
-async def test_chat_non_streaming(sdk_client) -> None:
-    resp = await sdk_client.chat.completions.create(
-        model="mock-model",
-        messages=[{"role": "user", "content": "Say hi"}],
-        max_tokens=3,
-    )
+@pytest.mark.anyio
+async def test_chat_non_streaming(sdk_transport) -> None:
+    async with httpx.AsyncClient(transport=sdk_transport, base_url="http://test") as http_client:
+        client = AsyncOpenAI(base_url="http://test/v1", api_key="test", http_client=http_client)
+        try:
+            resp = await client.chat.completions.create(
+                model="mock-model",
+                messages=[{"role": "user", "content": "Say hi"}],
+                max_tokens=3,
+            )
+        finally:
+            await client.close()
     assert resp.choices[0].message.content == "Hello SDK"
     assert resp.usage.completion_tokens > 0
 
 
-async def test_chat_streaming(sdk_client) -> None:
-    stream = await sdk_client.chat.completions.create(
-        model="mock-model",
-        messages=[{"role": "user", "content": "Say hi"}],
-        max_tokens=3,
-        stream=True,
-    )
-    parts: list[str] = []
-    async for chunk in stream:
-        content = chunk.choices[0].delta.content or ""
-        if content:
-            parts.append(content)
+@pytest.mark.anyio
+async def test_chat_streaming(sdk_transport) -> None:
+    async with httpx.AsyncClient(transport=sdk_transport, base_url="http://test") as http_client:
+        client = AsyncOpenAI(base_url="http://test/v1", api_key="test", http_client=http_client)
+        parts: list[str] = []
+        try:
+            stream = await client.chat.completions.create(
+                model="mock-model",
+                messages=[{"role": "user", "content": "Say hi"}],
+                max_tokens=3,
+                stream=True,
+            )
+            async for chunk in stream:
+                content = chunk.choices[0].delta.content or ""
+                if content:
+                    parts.append(content)
+        finally:
+            await client.close()
     assert "".join(parts) == "Hello SDK"
 
 
-async def test_completions_non_streaming(sdk_client) -> None:
-    resp = await sdk_client.completions.create(
-        model="mock-model",
-        prompt="Hello",
-        max_tokens=3,
-    )
+@pytest.mark.anyio
+async def test_completions_non_streaming(sdk_transport) -> None:
+    async with httpx.AsyncClient(transport=sdk_transport, base_url="http://test") as http_client:
+        client = AsyncOpenAI(base_url="http://test/v1", api_key="test", http_client=http_client)
+        try:
+            resp = await client.completions.create(
+                model="mock-model",
+                prompt="Hello",
+                max_tokens=3,
+            )
+        finally:
+            await client.close()
     assert resp.choices[0].text == "Hello SDK"
 
 
-async def test_list_models(sdk_client) -> None:
-    models = await sdk_client.models.list()
+@pytest.mark.anyio
+async def test_list_models(sdk_transport) -> None:
+    async with httpx.AsyncClient(transport=sdk_transport, base_url="http://test") as http_client:
+        client = AsyncOpenAI(base_url="http://test/v1", api_key="test", http_client=http_client)
+        try:
+            models = await client.models.list()
+        finally:
+            await client.close()
     assert models.data[0].id == "mock-model"
