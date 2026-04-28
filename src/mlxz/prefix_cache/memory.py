@@ -9,6 +9,7 @@ from typing import Any
 import mlx.core as mx
 import structlog
 
+from mlxz.engine.cache_utils import cache_type_name
 from mlxz.prefix_cache.base import CachedPrefix, compute_size_bytes
 from mlxz.types import PrefixCacheStats
 
@@ -102,7 +103,7 @@ class PrefixCacheMemory:
             return  # already cached
 
         # Extract and deep-copy KV states from a mutable cache snapshot.
-        cache_type = type(kv_cache_layers[0]).__name__
+        cache_type = cache_type_name(kv_cache_layers)
         cache_copy = copy.deepcopy(kv_cache_layers)
 
         def _snapshot_state(copy_cache: list[Any]) -> list[Any]:

@@ -1,0 +1,46 @@
+[
+  {
+    "system": "mlxz",
+    "model": "mlx-community/Llama-3.1-8B-Instruct-4bit",
+    "prompt_tokens": 185,
+    "max_tokens": 128,
+    "completion_tokens": 128,
+    "ttft_ms": 79.97,
+    "decode_tps": 69.59,
+    "total_latency_ms": 1919.18,
+    "timestamp": "2026-04-28T16:22:32.748808"
+  },
+  {
+    "system": "mlx-lm",
+    "model": "mlx-community/Llama-3.1-8B-Instruct-4bit",
+    "prompt_tokens": 185,
+    "max_tokens": 128,
+    "completion_tokens": 128,
+    "ttft_ms": 215.3,
+    "decode_tps": 76.79,
+    "total_latency_ms": 1882.11,
+    "timestamp": "2026-04-28T16:22:38.127032"
+  },
+  {
+    "system": "mlxz",
+    "model": "mlx-community/Llama-3.1-8B-Instruct-4bit",
+    "prompt_tokens": 1228,
+    "max_tokens": 128,
+    "completion_tokens": 128,
+    "ttft_ms": 1510.48,
+    "decode_tps": 67.51,
+    "total_latency_ms": 3406.41,
+    "timestamp": "2026-04-28T16:22:43.418220"
+  },
+  {
+    "system": "mlx-lm",
+    "model": "mlx-community/Llama-3.1-8B-Instruct-4bit",
+    "prompt_tokens": 1228,
+    "max_tokens": 128,
+    "completion_tokens": 128,
+    "ttft_ms": 1542.52,
+    "decode_tps": 73.8,
+    "total_latency_ms": 3277.0,
+    "timestamp": "2026-04-28T16:22:56.754401"
+  }
+]

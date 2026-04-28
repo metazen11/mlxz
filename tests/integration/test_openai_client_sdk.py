@@ -26,8 +26,6 @@ from mlxz.types import (
 openai = pytest.importorskip("openai")
 AsyncOpenAI = openai.AsyncOpenAI
 
-pytestmark = pytest.mark.anyio
-
 
 class _MockTokenizer:
     eos_token_id = 2
