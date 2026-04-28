@@ -30,7 +30,7 @@ class KVConfig(BaseModel):
 
     bits: Literal[4, 8, 16] = 8
     group_size: int = Field(default=64, ge=1, le=256)
-    quantized_kv_start: int = Field(default=256, ge=0)
+    quantized_kv_start: int = Field(default=512, ge=0)
     """Number of initial tokens kept at FP16 before quantisation kicks in."""
     streaming_sink_size: int = Field(default=4, ge=1)
     """Attention-sink tokens pinned at the start of the window (Xiao et al. 2023)."""

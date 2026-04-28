@@ -11,6 +11,7 @@ import mlx.core as mx
 import numpy as np
 import structlog
 
+from mlxz.engine.cache_utils import cache_type_name
 from mlxz.exceptions import PrefixCacheCorruption
 from mlxz.types import PrefixCacheStats
 
@@ -101,7 +102,7 @@ class PrefixCacheDisk:
         try:
             # Extract states
             kv_states = []
-            cache_type = type(kv_cache_layers[0]).__name__
+            cache_type = cache_type_name(kv_cache_layers)
             for layer_cache in kv_cache_layers:
                 state = layer_cache.state
                 kv_states.append(state)
